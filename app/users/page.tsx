@@ -1,5 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import ChatButton from "./ChatButton";
+import VoteButtons from "./VoteButtons";
+import OwnerPicker, { type Owner } from "./OwnerPicker";
 
 export const dynamic = "force-dynamic";
 
@@ -20,9 +22,77 @@ type UserRow = {
 const COLUMNS =
   "rest_id,screen_name,name,description,location,followers,following,tweets,is_blue_verified,can_dm,avatar_url";
 
-/** Every scraped profile, paged past PostgREST's 1000-row ceiling. */
-async function loadUsers(): Promise<UserRow[]> {
+/** Archive owners, for the dropdown. */
+async function loadOwners(): Promise<Owner[]> {
   const db = supabaseAdmin();
+  const { data, error } = await db
+    .from("owners")
+    .select("owner_id,screen_name,name,avatar_url,is_blue_verified")
+    .order("screen_name");
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as Owner[];
+}
+
+/** Counterparties belonging to one owner's archive. Null means every archive. */
+async function loadCounterparties(
+  ownerId: string | null
+): Promise<Set<string> | null> {
+  if (!ownerId) return null;
+
+  const db = supabaseAdmin();
+  const ids = new Set<string>();
+  const page = 1000;
+
+  for (let from = 0; ; from += page) {
+    const { data, error } = await db
+      .from("dm_threads")
+      .select("counterparty_id")
+      .eq("owner_id", ownerId)
+      .range(from, from + page - 1);
+
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) ids.add(row.counterparty_id as string);
+    if (!data || data.length < page) break;
+  }
+  return ids;
+}
+
+/**
+ * Ids that sent at least one message with seq > 0 - i.e. they said something
+ * after the opening message of the thread. Filters out bot/auto-reply accounts
+ * whose only appearance is the first message.
+ */
+async function loadRealSenders(): Promise<Set<string>> {
+  const db = supabaseAdmin();
+  const senders = new Set<string>();
+  const page = 1000;
+
+  for (let from = 0; ; from += page) {
+    const { data, error } = await db
+      .from("dm_messages")
+      .select("sender_id")
+      .gt("seq", 0)
+      .range(from, from + page - 1);
+
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) senders.add(row.sender_id as string);
+    if (!data || data.length < page) break;
+  }
+  return senders;
+}
+
+/**
+ * Scraped profiles that actually held a conversation, paged past PostgREST's
+ * 1000-row ceiling. PostgREST has no EXISTS subquery, so the correlated half
+ * is done as a set intersection here.
+ */
+async function loadUsers(ownerId: string | null): Promise<UserRow[]> {
+  const db = supabaseAdmin();
+  const [senders, scoped] = await Promise.all([
+    loadRealSenders(),
+    loadCounterparties(ownerId),
+  ]);
   const out: UserRow[] = [];
   const page = 1000;
 
@@ -35,10 +105,38 @@ async function loadUsers(): Promise<UserRow[]> {
       .range(from, from + page - 1);
 
     if (error) throw new Error(error.message);
-    out.push(...((data ?? []) as unknown as UserRow[]));
+    const rows = (data ?? []) as unknown as UserRow[];
+    out.push(
+      ...rows.filter(
+        (u) => senders.has(u.rest_id) && (!scoped || scoped.has(u.rest_id))
+      )
+    );
     if (!data || data.length < page) break;
   }
   return out;
+}
+
+type Vote = "like" | "dislike" | null;
+
+/** Existing votes, keyed by user id. */
+async function loadVotes(): Promise<Map<string, Vote>> {
+  const db = supabaseAdmin();
+  const votes = new Map<string, Vote>();
+  const page = 1000;
+
+  for (let from = 0; ; from += page) {
+    const { data, error } = await db
+      .from("user_votes")
+      .select("user_id,liked,disliked")
+      .range(from, from + page - 1);
+
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) {
+      votes.set(row.user_id, row.liked ? "like" : row.disliked ? "dislike" : null);
+    }
+    if (!data || data.length < page) break;
+  }
+  return votes;
 }
 
 function compact(n: number | null): string {
@@ -76,7 +174,15 @@ function Stat({ value, label }: { value: string; label: string }) {
   );
 }
 
-function UserCard({ user, index }: { user: UserRow; index: number }) {
+function UserCard({
+  user,
+  index,
+  vote,
+}: {
+  user: UserRow;
+  index: number;
+  vote: Vote;
+}) {
   return (
     <article className="flex flex-col gap-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-5 transition-colors hover:border-neutral-700">
       <div className="flex items-center gap-2">
@@ -149,6 +255,8 @@ function UserCard({ user, index }: { user: UserRow; index: number }) {
           </span>
         )}
 
+        <VoteButtons userId={user.rest_id} initialVote={vote} />
+
         <ChatButton
           userId={user.rest_id}
           screenName={user.screen_name}
@@ -160,8 +268,15 @@ function UserCard({ user, index }: { user: UserRow; index: number }) {
   );
 }
 
-export default async function UsersPage() {
-  const users = await loadUsers();
+export default async function UsersPage(props: PageProps<"/users">) {
+  const { owner } = await props.searchParams;
+  const ownerId = typeof owner === "string" && owner ? owner : null;
+
+  const [users, votes, owners] = await Promise.all([
+    loadUsers(ownerId),
+    loadVotes(),
+    loadOwners(),
+  ]);
 
   const totalFollowers = users.reduce((sum, u) => sum + (u.followers ?? 0), 0);
   const verified = users.filter((u) => u.is_blue_verified).length;
@@ -180,12 +295,15 @@ export default async function UsersPage() {
                 Scraped X profiles from your DM history.
               </p>
             </div>
-            <a
-              href="/scrape"
-              className="rounded-lg border border-neutral-700 px-4 py-2 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
-            >
-              Scraper →
-            </a>
+            <div className="flex items-center gap-3">
+              <a
+                href="/scrape"
+                className="rounded-lg border border-neutral-700 px-4 py-2 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
+              >
+                Scraper →
+              </a>
+              <OwnerPicker owners={owners} selected={ownerId} />
+            </div>
           </div>
 
           <dl className="flex flex-wrap gap-x-10 gap-y-3 border-y border-neutral-900 py-4">
@@ -218,7 +336,12 @@ export default async function UsersPage() {
         ) : (
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {users.map((user, i) => (
-              <UserCard key={user.rest_id} user={user} index={i} />
+              <UserCard
+                key={user.rest_id}
+                user={user}
+                index={i}
+                vote={votes.get(user.rest_id) ?? null}
+              />
             ))}
           </div>
         )}
