@@ -24,3 +24,9 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Indeterminate sweep for the owner-switch progress bar. */
+@keyframes owner-switch-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(500%); }
+}

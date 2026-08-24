@@ -43,5 +43,12 @@ next-env.d.ts
 # scraped id list - third-party X account ids, regenerate from Supabase
 user.json
 
+# ids still needing a profile, regenerate from dm_threads vs user_info
+user_missing.json
+user_missing.txt
+
+# Apify dataset exports - third-party profile data, re-download if needed
+dataset_*.json
+
 # python
 __pycache__/
