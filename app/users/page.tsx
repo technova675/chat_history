@@ -117,6 +117,8 @@ async function loadUsers(ownerId: string | null): Promise<UserRow[]> {
 }
 
 type Vote = "like" | "dislike" | null;
+/** Pill selection: a vote value, "none" for unrated, or null for all. */
+type VoteFilter = "like" | "dislike" | "none" | null;
 
 /** Existing votes, keyed by user id. */
 async function loadVotes(): Promise<Map<string, Vote>> {
@@ -268,15 +270,80 @@ function UserCard({
   );
 }
 
-export default async function UsersPage(props: PageProps<"/users">) {
-  const { owner } = await props.searchParams;
-  const ownerId = typeof owner === "string" && owner ? owner : null;
+/** Link-based vote filter pills. Preserves the owner selection. */
+function VoteFilterPills({
+  ownerId,
+  active,
+  counts,
+}: {
+  ownerId: string | null;
+  active: VoteFilter;
+  counts: { all: number; like: number; dislike: number; none: number };
+}) {
+  const href = (vote: VoteFilter) => {
+    const params = new URLSearchParams();
+    if (ownerId) params.set("owner", ownerId);
+    if (vote) params.set("vote", vote);
+    const qs = params.toString();
+    return qs ? `/users?${qs}` : "/users";
+  };
 
-  const [users, votes, owners] = await Promise.all([
+  const pills = [
+    { key: null, label: "All", count: counts.all, on: "border-neutral-500 bg-neutral-800 text-white" },
+    { key: "like" as const, label: "Liked", count: counts.like, on: "border-emerald-700 bg-emerald-950/60 text-emerald-400" },
+    { key: "dislike" as const, label: "Disliked", count: counts.dislike, on: "border-red-800 bg-red-950/60 text-red-400" },
+    { key: "none" as const, label: "Unrated", count: counts.none, on: "border-amber-800 bg-amber-950/60 text-amber-400" },
+  ];
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {pills.map((p) => (
+        <a
+          key={p.label}
+          href={href(p.key)}
+          aria-current={active === p.key ? "page" : undefined}
+          className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            active === p.key
+              ? p.on
+              : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:border-neutral-600 hover:text-white"
+          }`}
+        >
+          {p.label}
+          <span className="rounded-full bg-neutral-800/80 px-1.5 py-0.5 text-[10px] tabular-nums text-neutral-300">
+            {p.count.toLocaleString()}
+          </span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+export default async function UsersPage(props: PageProps<"/users">) {
+  const { owner, vote } = await props.searchParams;
+  const ownerId = typeof owner === "string" && owner ? owner : null;
+  const voteFilter: VoteFilter =
+    vote === "like" || vote === "dislike" || vote === "none" ? vote : null;
+
+  const [allUsers, votes, owners] = await Promise.all([
     loadUsers(ownerId),
     loadVotes(),
     loadOwners(),
   ]);
+
+  const counts = {
+    all: allUsers.length,
+    like: allUsers.filter((u) => votes.get(u.rest_id) === "like").length,
+    dislike: allUsers.filter((u) => votes.get(u.rest_id) === "dislike").length,
+    // No row at all (undefined) and a cleared row (null) are both unrated.
+    none: allUsers.filter((u) => !votes.get(u.rest_id)).length,
+  };
+  const users = voteFilter
+    ? allUsers.filter((u) =>
+        voteFilter === "none"
+          ? !votes.get(u.rest_id)
+          : votes.get(u.rest_id) === voteFilter
+      )
+    : allUsers;
 
   const totalFollowers = users.reduce((sum, u) => sum + (u.followers ?? 0), 0);
   const verified = users.filter((u) => u.is_blue_verified).length;
@@ -306,6 +373,12 @@ export default async function UsersPage(props: PageProps<"/users">) {
             </div>
           </div>
 
+          <VoteFilterPills
+            ownerId={ownerId}
+            active={voteFilter}
+            counts={counts}
+          />
+
           <dl className="flex flex-wrap gap-x-10 gap-y-3 border-y border-neutral-900 py-4">
             {[
               ["Profiles", users.length.toLocaleString()],
@@ -325,7 +398,17 @@ export default async function UsersPage(props: PageProps<"/users">) {
           </dl>
         </header>
 
-        {users.length === 0 ? (
+        {users.length === 0 && voteFilter ? (
+          <p className="rounded-xl border border-neutral-800 bg-neutral-950 px-6 py-12 text-center text-sm text-neutral-500">
+            No{" "}
+            {voteFilter === "like"
+              ? "liked"
+              : voteFilter === "dislike"
+                ? "disliked"
+                : "unrated"}{" "}
+            profiles yet.
+          </p>
+        ) : users.length === 0 ? (
           <p className="rounded-xl border border-neutral-800 bg-neutral-950 px-6 py-12 text-center text-sm text-neutral-500">
             No profiles yet — run the{" "}
             <a href="/scrape" className="text-sky-500 underline">
