@@ -107,7 +107,7 @@ export default function ChatButton({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="ml-auto inline-flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-900 px-3.5 py-1.5 text-xs font-medium text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-800"
+        className="inline-flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-900 px-3.5 py-1.5 text-xs font-medium text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-800"
       >
         <ChatIcon />
         Chat
