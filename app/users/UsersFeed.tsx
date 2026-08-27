@@ -5,20 +5,26 @@ import UserCard, { type CardRow } from "./UserCard";
 
 /**
  * The card grid. The server renders the first page; this appends the rest as
- * the sentinel below the grid scrolls into view, so revisiting /users costs
+ * the sentinel below the grid scrolls into view, so revisiting the page costs
  * one page of rows instead of the whole table.
+ *
+ * Feed-agnostic: /users pages it through /api/users filtered by owner+vote,
+ * /network through /api/network filtered by owner+relation. Everything the
+ * filters mean stays on the server; this only forwards them.
  */
 export default function UsersFeed({
   initialUsers,
   total,
-  ownerId,
-  vote,
+  endpoint = "/api/users",
+  filters,
   pageSize,
 }: {
   initialUsers: CardRow[];
   total: number;
-  ownerId: string | null;
-  vote: string | null;
+  /** Route that serves page 2 onward. Must return { users: CardRow[] }. */
+  endpoint?: string;
+  /** Filter params to forward; null entries are dropped. */
+  filters: Record<string, string | null>;
   // A prop, not an import: PAGE_SIZE lives beside the loaders in
   // lib/userCards.ts, which pulls in the service-role client.
   pageSize: number;
@@ -31,8 +37,14 @@ export default function UsersFeed({
   // Read inside the observer callback, which closes over its first render.
   const stateRef = useRef({ count: initialUsers.length, loading: false });
 
-  // One slot per filter combination, so switching owner or vote starts fresh.
-  const memoryKey = `users:${ownerId ?? "all"}:${vote ?? "all"}`;
+  // One slot per filter combination, so switching owner or filter starts
+  // fresh. Sorted, so the key does not depend on key order in the object.
+  const filterEntries = Object.entries(filters)
+    .filter(([, v]) => v)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const memoryKey = `${endpoint}:${
+    filterEntries.map(([k, v]) => `${k}=${v}`).join("&") || "all"
+  }`;
   // Blocks the observer while the saved pages are being refetched, otherwise
   // it fires against a short page and double-loads the same rows.
   const restoringRef = useRef(false);
@@ -62,11 +74,10 @@ export default function UsersFeed({
       const params = new URLSearchParams({
         offset: String(stateRef.current.count),
         limit: String(pageSize),
+        ...Object.fromEntries(filterEntries),
       });
-      if (ownerId) params.set("owner", ownerId);
-      if (vote) params.set("vote", vote);
 
-      const res = await fetch(`/api/users?${params}`);
+      const res = await fetch(`${endpoint}?${params}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
@@ -80,7 +91,10 @@ export default function UsersFeed({
       stateRef.current.loading = false;
       setLoading(false);
     }
-  }, [ownerId, pageSize, remember, total, vote]);
+    // filterEntries is rebuilt every render but only changes when memoryKey
+    // does, which is what this actually depends on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endpoint, memoryKey, pageSize, remember, total]);
 
   /**
    * Coming back from a card: refetch the pages that were open and drop the
@@ -111,17 +125,17 @@ export default function UsersFeed({
     (async () => {
       try {
         const rows: CardRow[] = [];
-        // /api/users caps limit at 100, so a deep backlog takes a few trips.
+        // The paging routes cap limit at 100, so a deep backlog takes a few
+        // trips.
         while (initialUsers.length + rows.length < target) {
           const offset = initialUsers.length + rows.length;
           const params = new URLSearchParams({
             offset: String(offset),
             limit: String(Math.min(100, target - offset)),
+            ...Object.fromEntries(filterEntries),
           });
-          if (ownerId) params.set("owner", ownerId);
-          if (vote) params.set("vote", vote);
 
-          const data = await fetch(`/api/users?${params}`).then((r) => r.json());
+          const data = await fetch(`${endpoint}?${params}`).then((r) => r.json());
           if (cancelled || data.error) break;
 
           const batch = (data.users ?? []) as CardRow[];

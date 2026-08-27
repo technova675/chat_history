@@ -96,9 +96,15 @@ function Row({
 export default function OwnerPicker({
   owners,
   selected,
+  basePath = "/users",
+  extraParams,
 }: {
   owners: Owner[];
   selected: string | null;
+  /** Page the picker navigates within. /network reuses it as-is. */
+  basePath?: string;
+  /** Filters to carry across the switch, e.g. the active pill. */
+  extraParams?: Record<string, string | null>;
 }) {
   const [open, setOpen] = useState(false);
   // Which owner is being navigated to, so the row shows its own spinner.
@@ -133,10 +139,16 @@ export default function OwnerPicker({
     }
     setOpen(false);
     setTarget(ownerId);
-    // /users is force-dynamic, so the swap is a server round trip. The
+    // The pages are force-dynamic, so the swap is a server round trip. The
     // transition gives us the pending flag to render a loader against.
+    const params = new URLSearchParams();
+    if (ownerId) params.set("owner", ownerId);
+    for (const [k, v] of Object.entries(extraParams ?? {})) {
+      if (v) params.set(k, v);
+    }
+    const qs = params.toString();
     startTransition(() => {
-      router.push(ownerId ? `/users?owner=${ownerId}` : "/users");
+      router.push(qs ? `${basePath}?${qs}` : basePath);
     });
   };
 
