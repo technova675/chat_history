@@ -126,6 +126,11 @@ select
   -- intersection they overlap on, and the Mutual pill filters on it alone.
   array_agg(distinct a.owner_id) filter
     (where a.relation = 'mutual') as mutual_owner_ids,
+  -- One direction only. Its own array rather than "not in mutual_owner_ids":
+  -- across two owners an account can be a mutual of one and a one-way follower
+  -- of the other, and it belongs under both pills.
+  array_agg(distinct a.owner_id) filter
+    (where a.relation <> 'mutual') as non_mutual_owner_ids,
 
   -- Post rollup and vote are per-account features that sit above either
   -- source, so they join here the way they do on user_cards.
@@ -147,7 +152,8 @@ comment on view social_cards is
   'Feed behind /network. Page it with limit/offset ordered by followers desc.
    Followers pill: relations overlaps {follower,mutual}, or for one owner
    follower_owner_ids contains that owner. Following pill: the same with
-   following_owner_ids. Mutual pill: mutual_owner_ids.';
+   following_owner_ids. Mutual and Non-mutual pills: mutual_owner_ids and
+   non_mutual_owner_ids.';
 
 -- Header totals for /network. A function for the same reason user_card_totals
 -- is one: PostgREST can count rows but cannot sum a column.
@@ -180,8 +186,11 @@ as $$
     -- One direction, every owner. A mutual satisfies either direction.
     when p_owner is null then
       c.relations && (case p_relation
-        when 'follower'  then array['follower',  'mutual']
-        when 'following' then array['following', 'mutual']
+        when 'follower'   then array['follower',  'mutual']
+        when 'following'  then array['following', 'mutual']
+        -- Non-mutual is not the complement of mutual once two owners are
+        -- loaded: an account can be one-way to one and mutual to the other.
+        when 'non_mutual' then array['follower',  'following']
         else array[p_relation] end)
     -- One owner, both directions.
     when p_relation is null then c.owner_ids @> array[p_owner]
@@ -190,6 +199,8 @@ as $$
     when p_relation = 'follower'  then c.follower_owner_ids  @> array[p_owner]
     when p_relation = 'following' then c.following_owner_ids @> array[p_owner]
     when p_relation = 'mutual'    then c.mutual_owner_ids    @> array[p_owner]
+    when p_relation = 'non_mutual'
+      then c.non_mutual_owner_ids @> array[p_owner]
     else false
   end;
 $$;

@@ -33,7 +33,13 @@ function RelationPills({
 }: {
   ownerId: string | null;
   active: RelationFilter;
-  counts: { all: number; follower: number; following: number; mutual: number };
+  counts: {
+    all: number;
+    follower: number;
+    following: number;
+    mutual: number;
+    non_mutual: number;
+  };
 }) {
   const href = (relation: RelationFilter) => {
     const params = new URLSearchParams();
@@ -48,6 +54,7 @@ function RelationPills({
     { key: "following" as const, label: "Following", count: counts.following, on: "border-sky-800 bg-sky-950/60 text-sky-400" },
     { key: "follower" as const, label: "Followers", count: counts.follower, on: "border-violet-800 bg-violet-950/60 text-violet-400" },
     { key: "mutual" as const, label: "Mutual", count: counts.mutual, on: "border-emerald-700 bg-emerald-950/60 text-emerald-400" },
+    { key: "non_mutual" as const, label: "Non-mutual", count: counts.non_mutual, on: "border-amber-800 bg-amber-950/60 text-amber-400" },
   ];
 
   return (
@@ -90,7 +97,12 @@ export default async function NetworkPage(props: PageProps<"/network">) {
   return (
     <main className="min-h-screen bg-black px-6 py-12">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-8">
-        <header className="flex flex-col gap-4">
+        {/* Sticky: the pills and the owner picker are the controls for the
+            grid below, and scrolling 2,400 cards should not put them out of
+            reach. -mx-6/px-6 bleeds the background over the padding on <main>
+            so cards do not show up the sides as they pass underneath, and
+            -mt-12/pt-12 covers its top padding for the same reason. */}
+        <header className="sticky top-0 z-30 -mx-6 -mt-12 flex flex-col gap-4 border-b border-neutral-900 bg-black/95 px-6 pb-4 pt-12 backdrop-blur">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white">
@@ -109,12 +121,12 @@ export default async function NetworkPage(props: PageProps<"/network">) {
               >
                 DM accounts →
               </a>
-              <a
+              {/* <a
                 href="/posts"
                 className="rounded-lg border border-neutral-700 px-4 py-2 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
               >
                 Posts →
-              </a>
+              </a> */}
               <OwnerPicker
                 owners={owners}
                 selected={ownerId}
@@ -126,7 +138,7 @@ export default async function NetworkPage(props: PageProps<"/network">) {
 
           <RelationPills ownerId={ownerId} active={relation} counts={counts} />
 
-          <dl className="flex flex-wrap gap-x-10 gap-y-3 border-y border-neutral-900 py-4">
+          <dl className="flex flex-wrap gap-x-10 gap-y-3 border-t border-neutral-900 pt-4">
             {[
               ["Profiles", totals.profiles.toLocaleString()],
               ["Mutual", totals.mutual.toLocaleString()],

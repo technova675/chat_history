@@ -31,11 +31,18 @@ export type Totals = {
  * 182 mutuals - and why Mutual is its own pill rather than the arithmetic
  * left over between the other two.
  */
-export type RelationFilter = "follower" | "following" | "mutual" | null;
+export type RelationFilter =
+  | "follower"
+  | "following"
+  | "mutual"
+  | "non_mutual"
+  | null;
+
+const RELATIONS = ["follower", "following", "mutual", "non_mutual"] as const;
 
 export function parseRelation(value: unknown): RelationFilter {
-  return value === "follower" || value === "following" || value === "mutual"
-    ? value
+  return RELATIONS.includes(value as (typeof RELATIONS)[number])
+    ? (value as RelationFilter)
     : null;
 }
 
@@ -58,6 +65,7 @@ function query(ownerId: string | null, relation: RelationFilter, count = false) 
     follower: "follower_owner_ids",
     following: "following_owner_ids",
     mutual: "mutual_owner_ids",
+    non_mutual: "non_mutual_owner_ids",
   } as const;
 
   if (ownerId && relation) {
@@ -66,6 +74,10 @@ function query(ownerId: string | null, relation: RelationFilter, count = false) 
     q = q.contains("owner_ids", [ownerId]);
   } else if (relation === "mutual") {
     q = q.contains("relations", ["mutual"]);
+  } else if (relation === "non_mutual") {
+    // Not the complement of Mutual across two owners: an account can be a
+    // mutual of one and a one-way follower of the other, and shows in both.
+    q = q.overlaps("relations", ["follower", "following"]);
   } else if (relation) {
     // overlaps, not contains: a mutual carries only "mutual" in relations,
     // yet belongs under both the Followers and the Following pill.
@@ -107,8 +119,8 @@ export async function loadSocialTotals(
 
 /** Row counts for the filter pills. */
 export async function loadSocialCounts(ownerId: string | null) {
-  const [all, follower, following, mutual] = await Promise.all(
-    ([null, "follower", "following", "mutual"] as RelationFilter[]).map(
+  const [all, follower, following, mutual, nonMutual] = await Promise.all(
+    ([null, ...RELATIONS] as RelationFilter[]).map(
       async (r) => {
         const { count, error } = await query(ownerId, r, true);
         if (error) throw new Error(error.message);
@@ -116,5 +128,5 @@ export async function loadSocialCounts(ownerId: string | null) {
       }
     )
   );
-  return { all, follower, following, mutual };
+  return { all, follower, following, mutual, non_mutual: nonMutual };
 }

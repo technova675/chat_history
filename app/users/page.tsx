@@ -90,7 +90,12 @@ export default async function UsersPage(props: PageProps<"/users">) {
   return (
     <main className="min-h-screen bg-black px-6 py-12">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-8">
-        <header className="flex flex-col gap-4">
+        {/* Sticky, like /network: the pills and the owner picker are the
+            controls for the grid below, and scrolling a few hundred cards
+            should not put them out of reach. -mx-6/px-6 bleeds the background
+            over the padding on <main> so cards do not show up the sides as
+            they pass underneath, and -mt-12/pt-12 covers its top padding. */}
+        <header className="sticky top-0 z-30 -mx-6 -mt-12 flex flex-col gap-4 border-b border-neutral-900 bg-black/95 px-6 pb-4 pt-12 backdrop-blur">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white">
@@ -107,7 +112,7 @@ export default async function UsersPage(props: PageProps<"/users">) {
               >
                 Network →
               </a>
-              <a
+              {/* <a
                 href="/posts"
                 className="rounded-lg border border-neutral-700 px-4 py-2 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
               >
@@ -118,7 +123,7 @@ export default async function UsersPage(props: PageProps<"/users">) {
                 className="rounded-lg border border-neutral-700 px-4 py-2 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-500 hover:text-white"
               >
                 Scraper →
-              </a>
+              </a> */}
               <OwnerPicker owners={owners} selected={ownerId} />
             </div>
           </div>
@@ -129,7 +134,7 @@ export default async function UsersPage(props: PageProps<"/users">) {
             counts={counts}
           />
 
-          <dl className="flex flex-wrap gap-x-10 gap-y-3 border-y border-neutral-900 py-4">
+          <dl className="flex flex-wrap gap-x-10 gap-y-3 border-t border-neutral-900 pt-4">
             {[
               ["Profiles", totals.profiles.toLocaleString()],
               ["Verified", totals.verified.toLocaleString()],
