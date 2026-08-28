@@ -54,6 +54,7 @@ function RelationPills({
     { key: "following" as const, label: "Following", count: counts.following, on: "border-sky-800 bg-sky-950/60 text-sky-400" },
     { key: "follower" as const, label: "Followers", count: counts.follower, on: "border-violet-800 bg-violet-950/60 text-violet-400" },
     { key: "mutual" as const, label: "Mutual", count: counts.mutual, on: "border-emerald-700 bg-emerald-950/60 text-emerald-400" },
+    // Followers minus Mutual: follows the owner without a follow-back.
     { key: "non_mutual" as const, label: "Non-mutual", count: counts.non_mutual, on: "border-amber-800 bg-amber-950/60 text-amber-400" },
   ];
 
@@ -161,7 +162,7 @@ export default async function NetworkPage(props: PageProps<"/network">) {
           <p className="rounded-xl border border-neutral-800 bg-neutral-950 px-6 py-12 text-center text-sm text-neutral-500">
             No follow graph loaded for this selection — run{" "}
             <code className="text-neutral-400">
-              supabase/load_social_graph.py
+              supabase/load_follow_graph.py
             </code>{" "}
             against an Apify follower-scraper export first.
           </p>
