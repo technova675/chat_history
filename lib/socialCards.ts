@@ -1,7 +1,12 @@
 import { cache } from "react";
 import { supabaseAdmin } from "@/lib/supabase";
 import type { CardRow } from "@/app/users/UserCard";
-import { PAGE_SIZE } from "@/lib/userCards";
+import {
+  PAGE_SIZE,
+  DEFAULT_SORT,
+  parseSort,
+  type SortKey,
+} from "@/lib/userCards";
 
 // /network is backed by two raw tables, `followers` and `following`, with no
 // view or function over them. PostgREST cannot express the union, the mutual
@@ -13,7 +18,8 @@ import { PAGE_SIZE } from "@/lib/userCards";
 // accounts, fetched once per request and reused by all seven calls the page
 // makes. What is NOT fetched for all of them is the post rollup and the vote;
 // those are joined onto the twenty rows of the page only.
-export { PAGE_SIZE };
+export { PAGE_SIZE, DEFAULT_SORT, parseSort };
+export type { SortKey };
 
 /** Edge columns. Deliberately not `select *`: `raw` is the whole scraped user
  *  object, several KB a row, and nothing on the card reads it. */
@@ -253,14 +259,94 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
   });
 }
 
-/** One page of cards, ordered by followers like /users is. */
+/**
+ * Post rollup for EVERY account, keyed by author_id.
+ *
+ * withRollups reads twenty rows because that is all a page renders. Sorting
+ * by views cannot: the twenty rows to render are not known until the whole
+ * selection has been ordered. cache() keeps this to one read per request even
+ * though the page calls the loaders several times.
+ */
+const loadRollupIndex = cache(
+  async (): Promise<Map<string, { total_views: number | null; avg_views: number | null }>> => {
+    const db = supabaseAdmin();
+    const out = new Map<string, { total_views: number | null; avg_views: number | null }>();
+
+    for (let offset = 0; ; offset += FETCH_PAGE) {
+      const { data, error } = await db
+        .from("user_posts_summary")
+        .select("author_id,total_views,avg_views")
+        .order("author_id", { ascending: true })
+        .range(offset, offset + FETCH_PAGE - 1);
+
+      if (error) throw new Error(error.message);
+      for (const row of data ?? []) {
+        out.set(String(row.author_id), {
+          total_views: row.total_views,
+          avg_views: row.avg_views,
+        });
+      }
+      if (!data || data.length < FETCH_PAGE) return out;
+    }
+  }
+);
+
+/**
+ * The selection in card order.
+ *
+ * Un-scraped accounts have no rollup row, and null is not zero: an account
+ * whose tweets were never fetched has not earned last place on an ascending
+ * view sort. They sort to the end in BOTH directions, the way `nulls last`
+ * would, so the accounts with real numbers stay together at the top.
+ *
+ * rest_id breaks every tie, so a row can never appear on two pages or on none
+ * as the grid scrolls.
+ */
+async function sortAccounts(
+  accounts: Account[],
+  sort: SortKey
+): Promise<Account[]> {
+  if (sort === "followers_desc") return accounts; // buildGraph's own order
+
+  const rows = [...accounts];
+
+  if (sort === "followers_asc") {
+    return rows.sort(
+      (a, b) =>
+        (a.profile.followers ?? Infinity) - (b.profile.followers ?? Infinity) ||
+        (a.profile.rest_id < b.profile.rest_id ? -1 : 1)
+    );
+  }
+
+  const index = await loadRollupIndex();
+  const field = sort.startsWith("total_views") ? "total_views" : "avg_views";
+  const ascending = sort.endsWith("_asc");
+  const valueOf = (a: Account) => index.get(a.profile.rest_id)?.[field] ?? null;
+
+  return rows.sort((a, b) => {
+    const x = valueOf(a);
+    const y = valueOf(b);
+    if (x === null && y === null) {
+      return a.profile.rest_id < b.profile.rest_id ? -1 : 1;
+    }
+    if (x === null) return 1;
+    if (y === null) return -1;
+    return (
+      (ascending ? x - y : y - x) ||
+      (a.profile.rest_id < b.profile.rest_id ? -1 : 1)
+    );
+  });
+}
+
+/** One page of cards, in the requested order. */
 export async function loadSocialCards(
   ownerId: string | null,
   relation: RelationFilter,
   offset: number,
-  limit: number
+  limit: number,
+  sort: SortKey = DEFAULT_SORT
 ): Promise<CardRow[]> {
-  const rows = await select(ownerId, relation);
+  const rows = await sortAccounts(await select(ownerId, relation), sort);
   return withRollups(rows.slice(offset, offset + limit));
 }
 

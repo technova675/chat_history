@@ -1,12 +1,16 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import OwnerPicker, { type Owner } from "./OwnerPicker";
 import UsersFeed from "./UsersFeed";
+import SortPicker from "./SortPicker";
 import { compact } from "@/lib/format";
 import {
   loadCards,
   loadCounts,
   loadTotals,
+  parseSort,
   PAGE_SIZE,
+  DEFAULT_SORT,
+  type SortKey,
   type VoteFilter,
 } from "@/lib/userCards";
 
@@ -28,16 +32,19 @@ async function loadOwners(): Promise<Owner[]> {
 function VoteFilterPills({
   ownerId,
   active,
+  sort,
   counts,
 }: {
   ownerId: string | null;
   active: VoteFilter;
+  sort: SortKey;
   counts: { all: number; like: number; dislike: number; none: number };
 }) {
   const href = (vote: VoteFilter) => {
     const params = new URLSearchParams();
     if (ownerId) params.set("owner", ownerId);
     if (vote) params.set("vote", vote);
+    if (sort !== DEFAULT_SORT) params.set("sort", sort);
     const qs = params.toString();
     return qs ? `/users?${qs}` : "/users";
   };
@@ -73,15 +80,16 @@ function VoteFilterPills({
 }
 
 export default async function UsersPage(props: PageProps<"/users">) {
-  const { owner, vote } = await props.searchParams;
+  const { owner, vote, sort: sortParam } = await props.searchParams;
   const ownerId = typeof owner === "string" && owner ? owner : null;
   const voteFilter: VoteFilter =
     vote === "like" || vote === "dislike" || vote === "none" ? vote : null;
+  const sort = parseSort(sortParam);
 
   // Only the first page of cards is fetched here; UsersFeed pulls the rest
   // through /api/users as the grid scrolls.
   const [users, counts, totals, owners] = await Promise.all([
-    loadCards(ownerId, voteFilter, 0, PAGE_SIZE),
+    loadCards(ownerId, voteFilter, 0, PAGE_SIZE, sort),
     loadCounts(ownerId),
     loadTotals(ownerId, voteFilter),
     loadOwners(),
@@ -124,14 +132,28 @@ export default async function UsersPage(props: PageProps<"/users">) {
               >
                 Scraper →
               </a> */}
-              <OwnerPicker owners={owners} selected={ownerId} />
+              <OwnerPicker
+                owners={owners}
+                selected={ownerId}
+                extraParams={{
+                  vote: voteFilter,
+                  sort: sort === DEFAULT_SORT ? null : sort,
+                }}
+              />
             </div>
           </div>
 
           <VoteFilterPills
             ownerId={ownerId}
             active={voteFilter}
+            sort={sort}
             counts={counts}
+          />
+
+          <SortPicker
+            basePath="/users"
+            active={sort}
+            extraParams={{ owner: ownerId, vote: voteFilter }}
           />
 
           <dl className="flex flex-wrap gap-x-10 gap-y-3 border-t border-neutral-900 pt-4">
@@ -173,12 +195,12 @@ export default async function UsersPage(props: PageProps<"/users">) {
           </p>
         ) : (
           <UsersFeed
-            key={`${ownerId ?? "all"}:${voteFilter ?? "all"}`}
+            key={`${ownerId ?? "all"}:${voteFilter ?? "all"}:${sort}`}
             initialUsers={users}
             total={totals.profiles}
             pageSize={PAGE_SIZE}
             endpoint="/api/users"
-            filters={{ owner: ownerId, vote: voteFilter }}
+            filters={{ owner: ownerId, vote: voteFilter, sort }}
           />
         )}
       </div>

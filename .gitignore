@@ -52,3 +52,7 @@ dataset_*.json
 
 # python
 __pycache__/
+
+# Supabase / spreadsheet exports - third-party profile data, re-export as needed
+*.csv
+*.xlsx

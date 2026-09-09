@@ -54,16 +54,101 @@ const POST_COLUMNS =
   "tweet_id,text,url,posted_at,reply_count,retweet_count,quote_count," +
   "like_count,bookmark_count,view_count,is_pinned,media_count,media_types";
 
+/** The same fields as PROFILE_COLUMNS, minus the ones the follow-graph tables
+ *  do not carry. `is_blue_verified` is one of them: `verified` in these tables
+ *  is the legacy check, not the same thing, so reading it would draw a badge
+ *  the account may not have. */
+const EDGE_PROFILE_COLUMNS =
+  "rest_id,screen_name,name,description,location,website,account_created_at," +
+  "followers,following,tweets,avatar_url,banner_url,fetched_at";
+
+type EdgeProfile = Omit<Profile, "is_blue_verified"> & { fetched_at: string };
+
+/** X serves avatars at 48px by default. The header renders one at 128px. */
+function upsizeAvatar(url: string | null): string | null {
+  return url ? url.replace(/_normal(\.[a-z]+)$/i, "_400x400$1") : null;
+}
+
+/**
+ * The account's profile, from whichever table holds it.
+ *
+ * user_info covers DM counterparties; the follow graph covers /network, and
+ * the two overlap only partly - an account reached from a /network card may
+ * have no user_info row at all, or a sparse one written before its profile
+ * was ever fetched. So both are read and merged field by field, non-null
+ * winning, rather than user_info being trusted wholesale: that is what left
+ * this page with an empty handle and a grey avatar.
+ */
 async function loadProfile(userId: string): Promise<Profile | null> {
   const db = supabaseAdmin();
-  const { data, error } = await db
-    .from("user_info")
-    .select(PROFILE_COLUMNS)
-    .eq("rest_id", userId)
-    .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  return (data ?? null) as Profile | null;
+  const [info, followerEdge, followingEdge] = await Promise.all([
+    db.from("user_info").select(PROFILE_COLUMNS).eq("rest_id", userId).maybeSingle(),
+    db
+      .from("followers")
+      .select(EDGE_PROFILE_COLUMNS)
+      .eq("rest_id", userId)
+      .order("fetched_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    db
+      .from("following")
+      .select(EDGE_PROFILE_COLUMNS)
+      .eq("rest_id", userId)
+      .order("fetched_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  if (info.error) throw new Error(info.error.message);
+  if (followerEdge.error) throw new Error(followerEdge.error.message);
+  if (followingEdge.error) throw new Error(followingEdge.error.message);
+
+  const profile = (info.data ?? null) as Profile | null;
+  const edges = [followerEdge.data, followingEdge.data].filter(
+    Boolean
+  ) as unknown as EdgeProfile[];
+
+  // An account can be a mutual of two owners, so several edges can exist.
+  // Freshest wins, the same rule /network applies when copies disagree.
+  edges.sort((a, b) => (a.fetched_at > b.fetched_at ? -1 : 1));
+  const edge = edges[0] ?? null;
+
+  if (!profile && !edge) return null;
+
+  // An empty string counts as missing, not as a value: a placeholder row
+  // written before the profile was fetched stores "" for the text columns,
+  // and `??` alone would let it win over a real name from the edge.
+  const pick = <K extends keyof EdgeProfile>(key: K) => {
+    const own = profile?.[key as keyof Profile] as
+      | EdgeProfile[K]
+      | null
+      | undefined;
+    if (own !== null && own !== undefined && own !== ("" as EdgeProfile[K])) {
+      return own;
+    }
+    const fallback = edge?.[key];
+    return fallback === undefined || fallback === ("" as EdgeProfile[K])
+      ? null
+      : fallback;
+  };
+
+  return {
+    rest_id: userId,
+    screen_name: (pick("screen_name") as string | null) ?? "",
+    name: pick("name") as string | null,
+    description: pick("description") as string | null,
+    location: pick("location") as string | null,
+    website: pick("website") as string | null,
+    account_created_at: pick("account_created_at") as string | null,
+    followers: pick("followers") as number | null,
+    following: pick("following") as number | null,
+    tweets: pick("tweets") as number | null,
+    // Only user_info knows this one; absent means no badge, not a false one.
+    is_blue_verified: profile?.is_blue_verified ?? null,
+    avatar_url: upsizeAvatar(pick("avatar_url") as string | null),
+    banner_url: pick("banner_url") as string | null,
+  };
 }
 
 /** Pinned first, then newest - the order X itself uses on a profile. */
@@ -102,16 +187,31 @@ function compact(n: number | null): string {
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 }
 
-/** "Jul 19" for this year, "Jul 19, 2025" otherwise - X's own convention. */
+/**
+ * "Jul 19, 3:42 PM" for this year, "Jul 19, 2025, 3:42 PM" otherwise, in IST.
+ *
+ * posted_at is stored as timestamptz and X reports it in UTC; the timezone is
+ * pinned to Asia/Kolkata rather than left to the viewer's locale so the page
+ * reads the same on the server render and in the browser - the two run in
+ * different zones, and a mismatch is a hydration error.
+ */
 function shortDate(iso: string): string {
   const d = new Date(iso);
-  const sameYear = d.getUTCFullYear() === new Date().getUTCFullYear();
-  return d.toLocaleDateString("en-US", {
+  // Compared in IST too: a post from 31 Dec 18:00 UTC is already next year
+  // in Kolkata, and mixing zones would print the wrong year for a few hours.
+  const istYear = (date: Date) =>
+    date.toLocaleString("en-US", { year: "numeric", timeZone: "Asia/Kolkata" });
+  const sameYear = istYear(d) === istYear(new Date());
+
+  return `${d.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     ...(sameYear ? {} : { year: "numeric" }),
-    timeZone: "UTC",
-  });
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  })} IST`;
 }
 
 function joinedDate(iso: string): string {
@@ -166,9 +266,21 @@ const ICONS = {
     "M8.75 21V3h2v18h-2zM18 21V8.5h2V21h-2zM4 21l.004-10h2L6 21H4zm9.248 0v-7h2v7h-2z",
 } as const;
 
+/**
+ * Where the back arrow goes: the feed the card was opened from, passed as
+ * ?from=. Only same-origin paths are honoured - anything else, including a
+ * protocol-relative "//host" that a browser would read as another site, falls
+ * back to /users so a crafted link cannot turn this into an open redirect.
+ */
+function safeBackHref(from: string | string[] | undefined): string {
+  const value = typeof from === "string" ? from : "";
+  return value.startsWith("/") && !value.startsWith("//") ? value : "/users";
+}
+
 export default async function UserPostsPage(props: PageProps<"/user_post">) {
-  const { userId } = await props.searchParams;
+  const { userId, from } = await props.searchParams;
   const id = typeof userId === "string" ? userId : "";
+  const backHref = safeBackHref(from);
 
   if (!id) {
     return (
@@ -205,7 +317,7 @@ export default async function UserPostsPage(props: PageProps<"/user_post">) {
       {/* Sticky header, as on X: back arrow, name, post count. */}
       <header className="sticky top-0 z-10 flex items-center gap-6 border-b border-neutral-800 bg-black/80 px-4 py-2 backdrop-blur">
         <a
-          href="/users"
+          href={backHref}
           aria-label="Back to accounts"
           className="rounded-full px-2 py-1 text-xl leading-none text-neutral-200 transition-colors hover:bg-neutral-900"
         >
@@ -336,8 +448,6 @@ export default async function UserPostsPage(props: PageProps<"/user_post">) {
           Posts
           <span className="absolute inset-x-4 bottom-0 h-1 rounded-full bg-sky-500" />
         </span>
-        <span className="px-6 py-4">Replies</span>
-        <span className="px-6 py-4">Media</span>
       </nav>
 
       {posts.length === 0 ? (

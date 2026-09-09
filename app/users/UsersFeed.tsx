@@ -29,6 +29,19 @@ export default function UsersFeed({
   // lib/userCards.ts, which pulls in the service-role client.
   pageSize: number;
 }) {
+  // Where a card's Posts button should send the reader back to. Derived from
+  // the props the feed already carries rather than from the URL: this renders
+  // on the server too, and a value read from `window` there would not match.
+  const backHref = (() => {
+    const path = endpoint.replace(/^\/api/, "");
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) params.set(key, value);
+    }
+    const qs = params.toString();
+    return qs ? `${path}?${qs}` : path;
+  })();
+
   const [users, setUsers] = useState(initialUsers);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -203,7 +216,7 @@ export default function UsersFeed({
     <>
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {users.map((user, i) => (
-          <UserCard key={user.rest_id} user={user} index={i} />
+          <UserCard key={user.rest_id} user={user} index={i} from={backHref} />
         ))}
       </div>
 

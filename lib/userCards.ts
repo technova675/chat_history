@@ -9,6 +9,43 @@ export const CARD_COLUMNS =
 /** Rows per page: the server renders the first, /api/users serves the rest. */
 export const PAGE_SIZE = 20;
 
+/**
+ * Card order, shared by /users and /network so the two feeds offer the same
+ * vocabulary. Followers comes off the profile; the two view sorts come from
+ * the post rollup, which most accounts do not have yet - so this is also what
+ * decides where the un-scraped ones land: last, in both directions.
+ */
+export const SORTS = [
+  "followers_desc",
+  "followers_asc",
+  "total_views_desc",
+  "total_views_asc",
+  "avg_views_desc",
+  "avg_views_asc",
+] as const;
+
+export type SortKey = (typeof SORTS)[number];
+
+export const DEFAULT_SORT: SortKey = "followers_desc";
+
+export function parseSort(value: unknown): SortKey {
+  return SORTS.includes(value as SortKey) ? (value as SortKey) : DEFAULT_SORT;
+}
+
+/** "avg_views_desc" -> the column and direction PostgREST wants. */
+export function sortColumn(sort: SortKey): {
+  column: "followers" | "total_views" | "avg_views";
+  ascending: boolean;
+} {
+  const ascending = sort.endsWith("_asc");
+  const column = sort.startsWith("followers")
+    ? "followers"
+    : sort.startsWith("total_views")
+      ? "total_views"
+      : "avg_views";
+  return { column, ascending };
+}
+
 export type VoteFilter = "like" | "dislike" | "none" | null;
 
 /** Shared filter, so the page and the paging route can never disagree. */
@@ -27,15 +64,21 @@ function query(ownerId: string | null, vote: VoteFilter, count = false) {
   return q;
 }
 
-/** One page of cards, ordered by followers like the original page was. */
+/** One page of cards, in the requested order. */
 export async function loadCards(
   ownerId: string | null,
   vote: VoteFilter,
   offset: number,
-  limit: number
+  limit: number,
+  sort: SortKey = DEFAULT_SORT
 ) {
+  const { column, ascending } = sortColumn(sort);
+
   const { data, error } = await query(ownerId, vote)
-    .order("followers", { ascending: false, nullsFirst: false })
+    // nullsFirst: false in BOTH directions. An account with no scraped posts
+    // has a null rollup, and null is not zero - it has not earned first place
+    // on an ascending view sort, so it sorts last either way.
+    .order(column, { ascending, nullsFirst: false })
     // rest_id breaks ties so a row can never appear on two pages, or none.
     .order("rest_id", { ascending: true })
     .range(offset, offset + limit - 1);

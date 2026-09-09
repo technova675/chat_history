@@ -64,9 +64,13 @@ function Stat({ value, label }: { value: string; label: string }) {
 export default function UserCard({
   user,
   index,
+  from,
 }: {
   user: CardRow;
   index: number;
+  /** The feed this card was rendered in, carried through to /user_post so its
+   *  back arrow returns to the right list and filter. */
+  from?: string;
 }) {
   return (
     <article className="flex flex-col gap-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-5 transition-colors hover:border-neutral-700">
@@ -153,7 +157,10 @@ export default function UserCard({
         {/* ml-auto lives here, not on ChatButton: the pair is pushed right
             together rather than being split apart by two auto margins. */}
         <a
-          href={`/user_post?userId=${user.rest_id}`}
+          href={
+            `/user_post?userId=${user.rest_id}` +
+            (from ? `&from=${encodeURIComponent(from)}` : "")
+          }
           className="ml-auto inline-flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-900 px-3.5 py-1.5 text-xs font-medium text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-800"
         >
           <PostIcon />

@@ -1,0 +1,305 @@
+import { supabaseAdmin } from "@/lib/supabase";
+import { toPostRows, type ApifyTweet } from "@/lib/posts";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 1000;
+
+const ACTOR = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest";
+
+/**
+ * The second owner's sweep. A separate route rather than an ?owner= parameter
+ * on /api/network/scrape because it also runs on a SECOND Apify account: the
+ * free plan caps concurrent actor runs per account, so two tokens are what
+ * make the two sweeps genuinely parallel rather than one queueing behind the
+ * other. Everything else here is identical to that route.
+ */
+const DEFAULT_OWNER = "958230722292064256";
+
+/** Second Apify account. Set alongside APIFY_TOKEN in .env.local. */
+const TOKEN_ENV = "APIFY_TOKEN_2";
+
+/** Actor input. Same window and shape as the first sweep. */
+const ACTOR_INPUT = {
+  "filter:blue_verified": false,
+  "filter:consumer_video": false,
+  "filter:has_engagement": false,
+  "filter:hashtags": false,
+  "filter:images": false,
+  "filter:links": false,
+  "filter:media": false,
+  "filter:mentions": false,
+  "filter:native_video": false,
+  "filter:nativeretweets": false,
+  "filter:news": false,
+  "filter:pro_video": false,
+  "filter:quote": false,
+  "filter:replies": false,
+  "filter:safe": false,
+  "filter:spaces": false,
+  "filter:twimg": false,
+  "filter:videos": false,
+  "filter:vine": false,
+  "include:nativeretweets": false,
+  lang: "en",
+  maxItems: 20,
+  queryType: "Latest",
+  since_time: "1767245400",
+  until_time: "1789064940",
+  min_retweets: 0,
+  min_faves: 0,
+  min_replies: 0,
+  "-min_retweets": 0,
+  "-min_faves": 0,
+  "-min_replies": 0,
+} as const;
+
+/** PostgREST caps a response at 1,000 rows, so a full table is read in pages. */
+const FETCH_PAGE = 1000;
+
+type Edge = {
+  rest_id: string;
+  screen_name: string | null;
+  followers: number | null;
+  protected: boolean | null;
+};
+
+/**
+ * One direction of the graph for one owner, paged past the row ceiling.
+ * Ordered by rest_id so the pages tile the table rather than overlapping.
+ */
+async function loadEdges(
+  table: "followers" | "following",
+  ownerId: string
+): Promise<Edge[]> {
+  const db = supabaseAdmin();
+  const rows: Edge[] = [];
+
+  for (let offset = 0; ; offset += FETCH_PAGE) {
+    const { data, error } = await db
+      .from(table)
+      .select("rest_id,screen_name,followers,protected")
+      .eq("owner_id", ownerId)
+      .order("rest_id", { ascending: true })
+      .range(offset, offset + FETCH_PAGE - 1);
+
+    if (error) throw new Error(`reading ${table}: ${error.message}`);
+    const page = (data ?? []) as unknown as Edge[];
+    rows.push(...page);
+    if (page.length < FETCH_PAGE) return rows;
+  }
+}
+
+/** Handles that already have rows, lowercased - X handles are case-insensitive. */
+async function loadScraped(): Promise<Set<string>> {
+  const db = supabaseAdmin();
+  const out = new Set<string>();
+
+  for (let offset = 0; ; offset += FETCH_PAGE) {
+    const { data, error } = await db
+      .from("user_posts")
+      .select("author_username")
+      .range(offset, offset + FETCH_PAGE - 1);
+
+    if (error) throw new Error(`reading user_posts: ${error.message}`);
+    for (const row of data ?? []) {
+      const name = (row as { author_username: string | null }).author_username;
+      if (name) out.add(name.toLowerCase());
+    }
+    if (!data || data.length < FETCH_PAGE) return out;
+  }
+}
+
+/**
+ * Does this handle already have posts? Checked immediately before the actor
+ * runs, not just when the queue was built.
+ *
+ * The two sweeps share user_posts, and an account can be a mutual of both
+ * owners: it then sits in both queues until one of them writes a row. Without
+ * this check the other tab pays for a second run of the same twenty tweets.
+ */
+async function alreadyScraped(screenName: string): Promise<boolean> {
+  const db = supabaseAdmin();
+  const { data, error } = await db
+    .from("user_posts")
+    .select("tweet_id")
+    .ilike("author_username", screenName)
+    .limit(1);
+
+  if (error) throw new Error(`reading user_posts: ${error.message}`);
+  return (data?.length ?? 0) > 0;
+}
+
+type Candidate = {
+  rest_id: string;
+  screen_name: string;
+  followers: number | null;
+};
+
+/**
+ * The owner's mutuals, in scrape order. Stands in for:
+ *
+ *   select f.rest_id, f.screen_name, f.followers
+ *   from followers f
+ *   join following g on g.rest_id = f.rest_id and g.owner_id = f.owner_id
+ *   where f.owner_id = $1
+ *     and f.screen_name is not null
+ *     and coalesce(f.protected, false) = false
+ *   order by f.followers desc nulls last, f.rest_id;
+ *
+ * PostgREST cannot express that self-join, so both directions are read and
+ * intersected here. Protected accounts are dropped: the actor returns nothing
+ * for a locked timeline, so running one is spend with no row to show for it.
+ */
+async function loadMutuals(ownerId: string): Promise<Candidate[]> {
+  const [followerEdges, followingEdges] = await Promise.all([
+    loadEdges("followers", ownerId),
+    loadEdges("following", ownerId),
+  ]);
+
+  const followedBack = new Set(followingEdges.map((e) => e.rest_id));
+  const byId = new Map<string, Candidate>();
+
+  for (const e of followerEdges) {
+    if (!followedBack.has(e.rest_id)) continue;
+    if (!e.screen_name) continue;
+    if (e.protected) continue;
+    // A repeated scrape pass can leave two rows for one account; one card,
+    // one actor run, so the first wins.
+    if (!byId.has(e.rest_id)) {
+      byId.set(e.rest_id, {
+        rest_id: e.rest_id,
+        screen_name: e.screen_name,
+        followers: e.followers,
+      });
+    }
+  }
+
+  return [...byId.values()].sort(
+    (a, b) =>
+      (b.followers ?? -1) - (a.followers ?? -1) ||
+      (a.rest_id < b.rest_id ? -1 : 1)
+  );
+}
+
+/** One synchronous actor run for one handle, on the second Apify account. */
+async function runActor(screenName: string): Promise<ApifyTweet[]> {
+  const token = process.env[TOKEN_ENV];
+  if (!token) {
+    throw new Error(
+      `${TOKEN_ENV} must be set in .env.local (restart next dev after adding it)`
+    );
+  }
+
+  const res = await fetch(
+    `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items?token=${token}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...ACTOR_INPUT,
+        twitterContent: `from:${screenName} -filter:replies`,
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(`Apify ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+
+  const items = await res.json();
+  return Array.isArray(items) ? items : [];
+}
+
+/** GET /api/network/scrape2 - the work queue. No actor runs, no charges. */
+export async function GET(request: Request) {
+  try {
+    const ownerId =
+      new URL(request.url).searchParams.get("owner") ?? DEFAULT_OWNER;
+
+    const [mutuals, scraped] = await Promise.all([
+      loadMutuals(ownerId),
+      loadScraped(),
+    ]);
+    const pending = mutuals.filter(
+      (m) => !scraped.has(m.screen_name.toLowerCase())
+    );
+
+    return Response.json({
+      ownerId,
+      total: mutuals.length,
+      done: mutuals.length - pending.length,
+      remaining: pending.length,
+      maxItems: ACTOR_INPUT.maxItems,
+      pending,
+    });
+  } catch (err) {
+    return Response.json({ error: (err as Error).message }, { status: 500 });
+  }
+}
+
+/**
+ * POST /api/network/scrape2 { screenName }
+ *
+ * One handle: run the actor, upsert what comes back into user_posts, return
+ * the counts. The rollups - user_posts_summary and network_posts_summary -
+ * are views computed over that table, so the card numbers follow with no
+ * second write.
+ *
+ * The browser drives the loop, so each call is a single billable actor run
+ * and the tab can be closed between any two of them without losing work.
+ */
+export async function POST(request: Request) {
+  const started = Date.now();
+  let screenName = "";
+
+  try {
+    const body = await request.json().catch(() => ({}));
+    screenName = String(body?.screenName ?? "").trim();
+    if (!screenName) {
+      return Response.json({ error: "screenName is required" }, { status: 400 });
+    }
+
+    // The other sweep may have bought this handle since the queue was built.
+    if (await alreadyScraped(screenName)) {
+      return Response.json({
+        screenName,
+        returned: 0,
+        imported: 0,
+        skipped: 0,
+        duplicates: 0,
+        alreadyScraped: true,
+        elapsedMs: Date.now() - started,
+      });
+    }
+
+    const tweets = await runActor(screenName);
+    const { rows, skipped, duplicates } = toPostRows(tweets);
+
+    if (rows.length > 0) {
+      const db = supabaseAdmin();
+      const { error } = await db
+        .from("user_posts")
+        .upsert(rows, { onConflict: "tweet_id" });
+      if (error) throw new Error(`writing user_posts: ${error.message}`);
+    }
+
+    return Response.json({
+      screenName,
+      returned: tweets.length,
+      imported: rows.length,
+      skipped,
+      duplicates,
+      alreadyScraped: false,
+      elapsedMs: Date.now() - started,
+    });
+  } catch (err) {
+    return Response.json(
+      {
+        screenName,
+        error: (err as Error).message,
+        elapsedMs: Date.now() - started,
+      },
+      { status: 500 }
+    );
+  }
+}

@@ -1,14 +1,18 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import OwnerPicker, { type Owner } from "@/app/users/OwnerPicker";
 import UsersFeed from "@/app/users/UsersFeed";
+import SortPicker from "@/app/users/SortPicker";
 import { compact } from "@/lib/format";
 import {
   loadSocialCards,
   loadSocialCounts,
   loadSocialTotals,
   parseRelation,
+  parseSort,
   PAGE_SIZE,
+  DEFAULT_SORT,
   type RelationFilter,
+  type SortKey,
 } from "@/lib/socialCards";
 
 export const dynamic = "force-dynamic";
@@ -29,10 +33,12 @@ async function loadOwners(): Promise<Owner[]> {
 function RelationPills({
   ownerId,
   active,
+  sort,
   counts,
 }: {
   ownerId: string | null;
   active: RelationFilter;
+  sort: SortKey;
   counts: {
     all: number;
     follower: number;
@@ -45,6 +51,7 @@ function RelationPills({
     const params = new URLSearchParams();
     if (ownerId) params.set("owner", ownerId);
     if (relation) params.set("rel", relation);
+    if (sort !== DEFAULT_SORT) params.set("sort", sort);
     const qs = params.toString();
     return qs ? `/network?${qs}` : "/network";
   };
@@ -82,14 +89,15 @@ function RelationPills({
 }
 
 export default async function NetworkPage(props: PageProps<"/network">) {
-  const { owner, rel } = await props.searchParams;
+  const { owner, rel, sort: sortParam } = await props.searchParams;
   const ownerId = typeof owner === "string" && owner ? owner : null;
   const relation = parseRelation(rel);
+  const sort = parseSort(sortParam);
 
   // Only the first page of cards is fetched here; UsersFeed pulls the rest
   // through /api/network as the grid scrolls.
   const [users, counts, totals, owners] = await Promise.all([
-    loadSocialCards(ownerId, relation, 0, PAGE_SIZE),
+    loadSocialCards(ownerId, relation, 0, PAGE_SIZE, sort),
     loadSocialCounts(ownerId),
     loadSocialTotals(ownerId, relation),
     loadOwners(),
@@ -132,12 +140,26 @@ export default async function NetworkPage(props: PageProps<"/network">) {
                 owners={owners}
                 selected={ownerId}
                 basePath="/network"
-                extraParams={{ rel: relation }}
+                extraParams={{
+                  rel: relation,
+                  sort: sort === DEFAULT_SORT ? null : sort,
+                }}
               />
             </div>
           </div>
 
-          <RelationPills ownerId={ownerId} active={relation} counts={counts} />
+          <RelationPills
+            ownerId={ownerId}
+            active={relation}
+            sort={sort}
+            counts={counts}
+          />
+
+          <SortPicker
+            basePath="/network"
+            active={sort}
+            extraParams={{ owner: ownerId, rel: relation }}
+          />
 
           <dl className="flex flex-wrap gap-x-10 gap-y-3 border-t border-neutral-900 pt-4">
             {[
@@ -168,12 +190,12 @@ export default async function NetworkPage(props: PageProps<"/network">) {
           </p>
         ) : (
           <UsersFeed
-            key={`${ownerId ?? "all"}:${relation ?? "all"}`}
+            key={`${ownerId ?? "all"}:${relation ?? "all"}:${sort}`}
             initialUsers={users}
             total={totals.profiles}
             pageSize={PAGE_SIZE}
             endpoint="/api/network"
-            filters={{ owner: ownerId, rel: relation }}
+            filters={{ owner: ownerId, rel: relation, sort }}
           />
         )}
       </div>
