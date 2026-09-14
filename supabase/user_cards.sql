@@ -6,7 +6,11 @@
 --           user_posts.sql, user_votes.
 -- Run in the Supabase SQL editor. Safe to re-run.
 
-create or replace view user_cards as
+-- Dropped rather than replaced: `create or replace view` refuses a changed
+-- column list, and this one grows whenever the post rollup does.
+drop view if exists user_cards cascade;
+
+create view user_cards as
 select
   u.rest_id,
   u.screen_name,
@@ -27,9 +31,14 @@ select
 
   -- Post-scrape rollup. Null until their tweets are scraped, which the UI
   -- renders as a dash rather than a zero.
-  max(s.posts)       as posts,
-  max(s.total_views) as total_views,
-  max(s.avg_views)   as avg_views,
+  -- median_views is the one the card shows: see the note in user_posts.sql
+  -- for why the mean is not the typical post. max_views carries the account's
+  -- best post so a viral hit stays visible as itself.
+  max(s.posts)        as posts,
+  max(s.total_views)  as total_views,
+  max(s.avg_views)    as avg_views,
+  max(s.median_views) as median_views,
+  max(s.max_views)    as max_views,
 
   -- Vote, folded to a single value so the pills can filter in SQL.
   -- 'none' rather than null keeps the filter a plain equality test.

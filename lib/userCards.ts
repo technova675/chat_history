@@ -4,7 +4,8 @@ import type { CardRow } from "@/app/users/UserCard";
 /** Columns the card needs. The view has already done every join. */
 export const CARD_COLUMNS =
   "rest_id,screen_name,name,description,location,followers,following,tweets," +
-  "is_blue_verified,can_dm,avatar_url,posts,total_views,avg_views,vote";
+  "is_blue_verified,can_dm,avatar_url,posts,total_views,median_views," +
+  "max_views,vote";
 
 /** Rows per page: the server renders the first, /api/users serves the rest. */
 export const PAGE_SIZE = 20;
@@ -20,8 +21,8 @@ export const SORTS = [
   "followers_asc",
   "total_views_desc",
   "total_views_asc",
-  "avg_views_desc",
-  "avg_views_asc",
+  "median_views_desc",
+  "median_views_asc",
 ] as const;
 
 export type SortKey = (typeof SORTS)[number];
@@ -32,9 +33,9 @@ export function parseSort(value: unknown): SortKey {
   return SORTS.includes(value as SortKey) ? (value as SortKey) : DEFAULT_SORT;
 }
 
-/** "avg_views_desc" -> the column and direction PostgREST wants. */
+/** "median_views_desc" -> the column and direction PostgREST wants. */
 export function sortColumn(sort: SortKey): {
-  column: "followers" | "total_views" | "avg_views";
+  column: "followers" | "total_views" | "median_views";
   ascending: boolean;
 } {
   const ascending = sort.endsWith("_asc");
@@ -42,7 +43,7 @@ export function sortColumn(sort: SortKey): {
     ? "followers"
     : sort.startsWith("total_views")
       ? "total_views"
-      : "avg_views";
+      : "median_views";
   return { column, ascending };
 }
 

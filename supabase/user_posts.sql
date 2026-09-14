@@ -76,7 +76,24 @@ select
   round(avg(p.like_count))                    as avg_likes,
   round(avg(p.view_count))                    as avg_views,
   min(p.posted_at)                            as first_post_at,
-  max(p.posted_at)                            as last_post_at
+  max(p.posted_at)                            as last_post_at,
+
+  -- New columns go on the END of this list, always: `create or replace view`
+  -- only accepts additions there, and dropping this view cascades to
+  -- user_cards and network_posts_summary.
+  --
+  -- median_views, not avg_views, is what the UI shows as the typical post.
+  -- One viral tweet drags the mean up by three orders of magnitude - an
+  -- account whose posts get a few hundred views each averages 300K the day
+  -- one of them lands - and every reader takes "avg views" to mean "what a
+  -- post of theirs normally gets". The median answers that question and one
+  -- outlier cannot move it. avg_views stays for comparison.
+  round(
+    percentile_cont(0.5) within group (order by p.view_count)
+  )::bigint                                   as median_views,
+
+  -- The viral post as its own fact, rather than smeared across every post.
+  max(p.view_count)                           as max_views
 from user_posts p
 left join user_info u on u.rest_id = p.author_id
 group by p.author_id, u.screen_name, u.name, u.followers;

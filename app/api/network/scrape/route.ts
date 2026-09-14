@@ -111,21 +111,32 @@ type Candidate = {
 };
 
 /**
- * The owner's mutuals, in scrape order. Stands in for:
+ * The owner's non-mutual followers, in scrape order. Stands in for:
  *
  *   select f.rest_id, f.screen_name, f.followers
  *   from followers f
- *   join following g on g.rest_id = f.rest_id and g.owner_id = f.owner_id
  *   where f.owner_id = $1
  *     and f.screen_name is not null
  *     and coalesce(f.protected, false) = false
+ *     and not exists (
+ *       select 1 from following g
+ *       where g.rest_id = f.rest_id and g.owner_id = f.owner_id
+ *     )
  *   order by f.followers desc nulls last, f.rest_id;
  *
- * PostgREST cannot express that self-join, so both directions are read and
- * intersected here. Protected accounts are dropped: the actor returns nothing
+ * Non-mutual, not mutual: they follow the owner, the owner does not follow
+ * back. That is the side of the graph with no post rows yet.
+ *
+ * PostgREST cannot express that anti-join, so both directions are read and
+ * subtracted here. Protected accounts are dropped: the actor returns nothing
  * for a locked timeline, so running one is spend with no row to show for it.
+ *
+ * The rollup is deliberately not joined for the ordering. Every account in
+ * this queue is one with no posts stored, so total_views is null across the
+ * board and `order by total_views desc nulls last` collapses to the follower
+ * count - which is what this sorts by directly.
  */
-async function loadMutuals(ownerId: string): Promise<Candidate[]> {
+async function loadNonMutuals(ownerId: string): Promise<Candidate[]> {
   const [followerEdges, followingEdges] = await Promise.all([
     loadEdges("followers", ownerId),
     loadEdges("following", ownerId),
@@ -135,7 +146,7 @@ async function loadMutuals(ownerId: string): Promise<Candidate[]> {
   const byId = new Map<string, Candidate>();
 
   for (const e of followerEdges) {
-    if (!followedBack.has(e.rest_id)) continue;
+    if (followedBack.has(e.rest_id)) continue;
     if (!e.screen_name) continue;
     if (e.protected) continue;
     // A repeated scrape pass can leave two rows for one account; one card,
@@ -187,18 +198,18 @@ export async function GET(request: Request) {
     const ownerId =
       new URL(request.url).searchParams.get("owner") ?? DEFAULT_OWNER;
 
-    const [mutuals, scraped] = await Promise.all([
-      loadMutuals(ownerId),
+    const [candidates, scraped] = await Promise.all([
+      loadNonMutuals(ownerId),
       loadScraped(),
     ]);
-    const pending = mutuals.filter(
-      (m) => !scraped.has(m.screen_name.toLowerCase())
+    const pending = candidates.filter(
+      (c) => !scraped.has(c.screen_name.toLowerCase())
     );
 
     return Response.json({
       ownerId,
-      total: mutuals.length,
-      done: mutuals.length - pending.length,
+      total: candidates.length,
+      done: candidates.length - pending.length,
       remaining: pending.length,
       maxItems: ACTOR_INPUT.maxItems,
       pending,

@@ -180,9 +180,9 @@ export default function NetworkScrapePage() {
 
         <p className="leading-relaxed text-slate-400">
           Latest {queue?.maxItems ?? 20} posts for every{" "}
-          <span className="text-emerald-400">mutual</span> of owner{" "}
+          <span className="text-emerald-400">non-mutual follower</span> of owner{" "}
           <span className="text-slate-200">{queue?.ownerId ?? "…"}</span> —
-          accounts in both <span className="text-slate-200">followers</span> and{" "}
+          accounts in <span className="text-slate-200">followers</span> but not{" "}
           <span className="text-slate-200">following</span>, skipping protected
           profiles and any handle already in{" "}
           <span className="text-slate-200">user_posts</span>. One synchronous
@@ -197,7 +197,7 @@ export default function NetworkScrapePage() {
           <span className="text-sky-200">user_posts</span>; the{" "}
           <span className="text-sky-200">user_posts_summary</span> and{" "}
           <span className="text-sky-200">network_posts_summary</span> rollups —
-          posts, total views, avg views — recompute on the next page load.
+          posts, total views, median views — recompute on the next page load.
         </div>
 
         <div className="relative h-7 w-full overflow-hidden rounded-full border border-slate-700/70 bg-[#111823]">

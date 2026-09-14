@@ -19,7 +19,8 @@ export type CardRow = {
   avatar_url: string | null;
   posts: number | null;
   total_views: number | null;
-  avg_views: number | null;
+  median_views: number | null;
+  max_views: number | null;
   vote: "like" | "dislike" | "none";
 };
 
@@ -135,11 +136,16 @@ export default function UserCard({
       </div>
 
       {/* Scraped-post rollup. Dashes rather than zeros when the account has
-          not been scraped: not yet scraped is not the same as no engagement. */}
-      <div className="grid grid-cols-3 gap-3">
+          not been scraped: not yet scraped is not the same as no engagement.
+
+          Median, not mean: one viral post pulls the average three orders of
+          magnitude above what this account's posts actually get, and "best
+          post" is where that hit belongs. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat value={compact(user.posts)} label="Posts" />
+        <Stat value={compact(user.median_views)} label="Median views" />
         <Stat value={compact(user.total_views)} label="Total views" />
-        <Stat value={compact(user.avg_views)} label="Avg views" />
+        <Stat value={compact(user.max_views)} label="Best post" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">

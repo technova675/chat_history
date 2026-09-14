@@ -15,7 +15,7 @@
 
 drop view if exists network_posts_summary cascade;
 
-create or replace view network_posts_summary as
+create view network_posts_summary as
 with edges as (
   -- One row per (owner, account, direction). The two tables are read
   -- separately because a mutual genuinely has a row in each; the union
@@ -84,6 +84,8 @@ select
   s.total_views,
   s.avg_likes,
   s.avg_views,
+  s.median_views,
+  s.max_views,
   s.first_post_at,
   s.last_post_at,
 

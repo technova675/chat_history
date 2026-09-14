@@ -108,7 +108,10 @@ async function loadEdges(
 
 /** One account, with the profile fields plus which pills it belongs under. */
 type Account = {
-  profile: Omit<CardRow, "posts" | "total_views" | "avg_views" | "vote">;
+  profile: Omit<
+    CardRow,
+    "posts" | "total_views" | "median_views" | "max_views" | "vote"
+  >;
   protected: boolean;
   follower: boolean;
   following: boolean;
@@ -234,7 +237,7 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
   const [posts, votes] = await Promise.all([
     db
       .from("user_posts_summary")
-      .select("author_id,posts,total_views,avg_views")
+      .select("author_id,posts,total_views,median_views,max_views")
       .in("author_id", ids),
     db.from("user_votes").select("user_id,liked,disliked").in("user_id", ids),
   ]);
@@ -253,7 +256,8 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
       // rather than a zero.
       posts: p?.posts ?? null,
       total_views: p?.total_views ?? null,
-      avg_views: p?.avg_views ?? null,
+      median_views: p?.median_views ?? null,
+      max_views: p?.max_views ?? null,
       vote: v?.liked ? "like" : v?.disliked ? "dislike" : "none",
     } satisfies CardRow;
   });
@@ -268,14 +272,19 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
  * though the page calls the loaders several times.
  */
 const loadRollupIndex = cache(
-  async (): Promise<Map<string, { total_views: number | null; avg_views: number | null }>> => {
+  async (): Promise<
+    Map<string, { total_views: number | null; median_views: number | null }>
+  > => {
     const db = supabaseAdmin();
-    const out = new Map<string, { total_views: number | null; avg_views: number | null }>();
+    const out = new Map<
+      string,
+      { total_views: number | null; median_views: number | null }
+    >();
 
     for (let offset = 0; ; offset += FETCH_PAGE) {
       const { data, error } = await db
         .from("user_posts_summary")
-        .select("author_id,total_views,avg_views")
+        .select("author_id,total_views,median_views")
         .order("author_id", { ascending: true })
         .range(offset, offset + FETCH_PAGE - 1);
 
@@ -283,7 +292,7 @@ const loadRollupIndex = cache(
       for (const row of data ?? []) {
         out.set(String(row.author_id), {
           total_views: row.total_views,
-          avg_views: row.avg_views,
+          median_views: row.median_views,
         });
       }
       if (!data || data.length < FETCH_PAGE) return out;
@@ -319,7 +328,9 @@ async function sortAccounts(
   }
 
   const index = await loadRollupIndex();
-  const field = sort.startsWith("total_views") ? "total_views" : "avg_views";
+  const field = sort.startsWith("total_views")
+    ? "total_views"
+    : "median_views";
   const ascending = sort.endsWith("_asc");
   const valueOf = (a: Account) => index.get(a.profile.rest_id)?.[field] ?? null;
 

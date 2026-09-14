@@ -204,9 +204,9 @@ export default function NetworkScrapeTwoPage() {
 
         <p className="leading-relaxed text-slate-400">
           Latest {queue?.maxItems ?? 20} posts for every{" "}
-          <span className="text-violet-400">mutual</span> of owner{" "}
+          <span className="text-violet-400">non-mutual follower</span> of owner{" "}
           <span className="text-slate-200">{queue?.ownerId ?? "…"}</span> —
-          accounts in both <span className="text-slate-200">followers</span> and{" "}
+          accounts in <span className="text-slate-200">followers</span> but not{" "}
           <span className="text-slate-200">following</span>, skipping protected
           profiles and any handle already in{" "}
           <span className="text-slate-200">user_posts</span>. Runs on the second

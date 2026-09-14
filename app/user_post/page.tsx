@@ -41,7 +41,8 @@ type Summary = {
   total_likes: number | null;
   total_views: number | null;
   avg_likes: number | null;
-  avg_views: number | null;
+  median_views: number | null;
+  max_views: number | null;
   first_post_at: string | null;
   last_post_at: string | null;
 };
@@ -169,7 +170,10 @@ async function loadSummary(userId: string): Promise<Summary | null> {
   const db = supabaseAdmin();
   const { data, error } = await db
     .from("user_posts_summary")
-    .select("posts,replies,with_media,total_likes,total_views,avg_likes,avg_views,first_post_at,last_post_at")
+    .select(
+      "posts,replies,with_media,total_likes,total_views,avg_likes," +
+        "median_views,max_views,first_post_at,last_post_at"
+    )
     .eq("author_id", userId)
     .maybeSingle();
 
@@ -425,7 +429,11 @@ export default async function UserPostsPage(props: PageProps<"/user_post">) {
             {[
               ["Posts", compact(summary.posts)],
               ["Total views", compact(summary.total_views)],
-              ["Avg views", compact(summary.avg_views)],
+              // Median rather than mean: a single viral post makes the
+              // average read as a claim about every post that is off by
+              // orders of magnitude. "Best post" is where that hit belongs.
+              ["Median views", compact(summary.median_views)],
+              ["Best post", compact(summary.max_views)],
               ["Total likes", compact(summary.total_likes)],
               ["Avg likes", compact(summary.avg_likes)],
               ["With media", compact(summary.with_media)],

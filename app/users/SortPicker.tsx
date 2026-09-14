@@ -44,9 +44,9 @@ export default function SortPicker({
       low: { sort: "total_views_asc" as SortKey, text: "lowest first" },
     },
     {
-      label: "Avg views",
-      high: { sort: "avg_views_desc" as SortKey, text: "highest first" },
-      low: { sort: "avg_views_asc" as SortKey, text: "lowest first" },
+      label: "Median views",
+      high: { sort: "median_views_desc" as SortKey, text: "highest first" },
+      low: { sort: "median_views_asc" as SortKey, text: "lowest first" },
     },
   ];
 
