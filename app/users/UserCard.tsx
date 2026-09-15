@@ -1,6 +1,7 @@
 "use client";
 
 import VoteButtons from "./VoteButtons";
+import FormatButtons from "./FormatButtons";
 import ChatButton from "./ChatButton";
 import { compact } from "@/lib/format";
 
@@ -22,6 +23,9 @@ export type CardRow = {
   median_views: number | null;
   max_views: number | null;
   vote: "like" | "dislike" | "none";
+  /** Format vote: independent of each other and of the like/dislike vote. */
+  heygen: boolean;
+  text_format: boolean;
 };
 
 function VerifiedBadge() {
@@ -158,6 +162,12 @@ export default function UserCard({
         <VoteButtons
           userId={user.rest_id}
           initialVote={user.vote === "none" ? null : user.vote}
+        />
+
+        <FormatButtons
+          userId={user.rest_id}
+          initialHeygen={user.heygen}
+          initialText={user.text_format}
         />
 
         {/* ml-auto lives here, not on ChatButton: the pair is pushed right

@@ -110,7 +110,13 @@ async function loadEdges(
 type Account = {
   profile: Omit<
     CardRow,
-    "posts" | "total_views" | "median_views" | "max_views" | "vote"
+    | "posts"
+    | "total_views"
+    | "median_views"
+    | "max_views"
+    | "vote"
+    | "heygen"
+    | "text_format"
   >;
   protected: boolean;
   follower: boolean;
@@ -234,22 +240,30 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
   const db = supabaseAdmin();
   const ids = accounts.map((a) => a.profile.rest_id);
 
-  const [posts, votes] = await Promise.all([
+  const [posts, votes, formats] = await Promise.all([
     db
       .from("user_posts_summary")
       .select("author_id,posts,total_views,median_views,max_views")
       .in("author_id", ids),
     db.from("user_votes").select("user_id,liked,disliked").in("user_id", ids),
+    db
+      .from("user_formats")
+      .select("user_id,heygen,text_format")
+      .in("user_id", ids),
   ]);
   if (posts.error) throw new Error(posts.error.message);
   if (votes.error) throw new Error(votes.error.message);
+  if (formats.error) throw new Error(formats.error.message);
 
   const byPosts = new Map(posts.data?.map((p) => [p.author_id, p]) ?? []);
   const byVote = new Map(votes.data?.map((v) => [v.user_id, v]) ?? []);
+  const byFormat = new Map(formats.data?.map((f) => [f.user_id, f]) ?? []);
 
   return accounts.map((a) => {
     const p = byPosts.get(a.profile.rest_id);
     const v = byVote.get(a.profile.rest_id);
+    // No row means nobody has picked a format yet: both flags off.
+    const f = byFormat.get(a.profile.rest_id);
     return {
       ...a.profile,
       // Null until their tweets are scraped, which the UI renders as a dash
@@ -259,6 +273,8 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
       median_views: p?.median_views ?? null,
       max_views: p?.max_views ?? null,
       vote: v?.liked ? "like" : v?.disliked ? "dislike" : "none",
+      heygen: f?.heygen ?? false,
+      text_format: f?.text_format ?? false,
     } satisfies CardRow;
   });
 }

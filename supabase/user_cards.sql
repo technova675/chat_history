@@ -3,7 +3,7 @@
 -- time rather than every profile on every visit.
 --
 -- Requires: schema.sql, owners.sql, add_owner_id.sql, user_info.sql,
---           user_posts.sql, user_votes.
+--           user_posts.sql, user_votes, user_formats.sql.
 -- Run in the Supabase SQL editor. Safe to re-run.
 
 -- Dropped rather than replaced: `create or replace view` refuses a changed
@@ -44,7 +44,13 @@ select
   -- 'none' rather than null keeps the filter a plain equality test.
   coalesce(max(
     case when v.liked then 'like' when v.disliked then 'dislike' end
-  ), 'none') as vote
+  ), 'none') as vote,
+
+  -- Format vote. Two independent flags rather than one folded value: an
+  -- account can be marked for both outputs, or for neither, which is the
+  -- state every account starts in.
+  coalesce(bool_or(f.heygen), false)      as heygen,
+  coalesce(bool_or(f.text_format), false) as text_format
 
 from dm_threads t
 join user_info u
@@ -52,6 +58,7 @@ join user_info u
  and u.screen_name is not null
 left join user_posts_summary s on s.author_id = u.rest_id
 left join user_votes v         on v.user_id   = u.rest_id
+left join user_formats f       on f.user_id   = u.rest_id
 -- Said something after the opening message: filters out bots and auto-replies.
 where exists (
   select 1 from dm_messages m
