@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase";
+import { HIDDEN_ACCOUNT_IDS } from "@/lib/hiddenAccounts";
 import type { CardRow } from "@/app/users/UserCard";
 
 /** Columns the card needs. The view has already done every join. */
@@ -49,6 +50,9 @@ export function sortColumn(sort: SortKey): {
 
 export type VoteFilter = "like" | "dislike" | "none" | null;
 
+/** Pre-joined once: this is ~7.7KB of URL and never changes at runtime. */
+const HIDDEN_LIST = `(${HIDDEN_ACCOUNT_IDS.join(",")})`;
+
 /** Shared filter, so the page and the paging route can never disagree. */
 function query(ownerId: string | null, vote: VoteFilter, count = false) {
   const db = supabaseAdmin();
@@ -62,6 +66,11 @@ function query(ownerId: string | null, vote: VoteFilter, count = false) {
   // owner_ids is an array: one card can belong to several archives.
   if (ownerId) q = q.contains("owner_ids", [ownerId]);
   if (vote) q = q.eq("vote", vote);
+
+  // Holds the feed at the 482 accounts it showed before the 2026-09-17
+  // profile sweep. See lib/hiddenAccounts.ts for why these rows are sound
+  // data that is nonetheless not displayed.
+  if (HIDDEN_ACCOUNT_IDS.length > 0) q = q.not("rest_id", "in", HIDDEN_LIST);
   return q;
 }
 
@@ -95,18 +104,51 @@ export type Totals = {
   combined_reach: number;
 };
 
-/** Header totals. An RPC because PostgREST can count rows but not sum them. */
+/**
+ * Header totals.
+ *
+ * Was an RPC, because PostgREST can count rows but not sum them. The RPC
+ * reads user_cards directly and so cannot see the hidden-account filter,
+ * which would leave the header claiming 923 profiles above a feed of 482.
+ * Summing four small columns over the filtered rows in JS keeps the header
+ * and the cards telling the same story, which matters more here than saving
+ * one round trip. Move this back to SQL if the feed ever outgrows a few
+ * thousand rows - or run supabase/feed_enabled.sql, which puts the filter in
+ * the view and makes user_card_totals correct again on its own.
+ */
 export async function loadTotals(
   ownerId: string | null,
   vote: VoteFilter
 ): Promise<Totals> {
-  const db = supabaseAdmin();
-  const { data, error } = await db
-    .rpc("user_card_totals", { p_owner: ownerId, p_vote: vote })
-    .single();
+  const totals: Totals = {
+    profiles: 0,
+    verified: 0,
+    dm_open: 0,
+    combined_reach: 0,
+  };
 
-  if (error) throw new Error(error.message);
-  return data as Totals;
+  const page = 1000;
+  for (let from = 0; ; from += page) {
+    const { data, error } = await query(ownerId, vote)
+      .select("is_blue_verified,can_dm,followers")
+      .range(from, from + page - 1);
+
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as {
+      is_blue_verified: boolean | null;
+      can_dm: boolean | null;
+      followers: number | null;
+    }[];
+
+    for (const row of rows) {
+      totals.profiles++;
+      if (row.is_blue_verified) totals.verified++;
+      if (row.can_dm) totals.dm_open++;
+      totals.combined_reach += row.followers ?? 0;
+    }
+    if (rows.length < page) break;
+  }
+  return totals;
 }
 
 /** Row counts for the filter pills. head:true, so no rows travel. */
