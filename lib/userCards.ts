@@ -6,7 +6,7 @@ import type { CardRow } from "@/app/users/UserCard";
 export const CARD_COLUMNS =
   "rest_id,screen_name,name,description,location,followers,following,tweets," +
   "is_blue_verified,can_dm,avatar_url,posts,total_views,median_views," +
-  "max_views,vote,heygen,text_format";
+  "max_views,vote,heygen,text_format,personal";
 
 /** Rows per page: the server renders the first, /api/users serves the rest. */
 export const PAGE_SIZE = 20;

@@ -26,6 +26,7 @@ export type CardRow = {
   /** Format vote: independent of each other and of the like/dislike vote. */
   heygen: boolean;
   text_format: boolean;
+  personal: boolean;
 };
 
 function VerifiedBadge() {
@@ -168,6 +169,7 @@ export default function UserCard({
           userId={user.rest_id}
           initialHeygen={user.heygen}
           initialText={user.text_format}
+          initialPersonal={user.personal}
         />
 
         {/* ml-auto lives here, not on ChatButton: the pair is pushed right

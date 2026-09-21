@@ -2,24 +2,27 @@
 
 import { useState, useTransition } from "react";
 
-type Format = "heygen" | "text_format";
+type Format = "heygen" | "text_format" | "personal";
 
 /**
- * HEYGEN / TEXT toggles. Unlike the like/dislike pair these are independent:
- * either, both, or neither can be on, and both start off.
+ * HEYGEN / TEXT / PERSONAL toggles. Unlike the like/dislike pair these are
+ * independent: any, all, or none can be on, and all start off.
  */
 export default function FormatButtons({
   userId,
   initialHeygen,
   initialText,
+  initialPersonal,
 }: {
   userId: string;
   initialHeygen: boolean;
   initialText: boolean;
+  initialPersonal: boolean;
 }) {
   const [state, setState] = useState<Record<Format, boolean>>({
     heygen: initialHeygen,
     text_format: initialText,
+    personal: initialPersonal,
   });
   const [pending, startTransition] = useTransition();
   const [failed, setFailed] = useState(false);
@@ -74,6 +77,16 @@ export default function FormatButtons({
         className={pill("text_format", "border-amber-700 bg-amber-950/60 text-amber-300")}
       >
         Text
+      </button>
+
+      <button
+        type="button"
+        onClick={() => toggle("personal")}
+        aria-pressed={state.personal}
+        title={state.personal ? "Unmark Personal" : "Mark Personal"}
+        className={pill("personal", "border-teal-700 bg-teal-950/60 text-teal-300")}
+      >
+        Personal
       </button>
 
       {failed && (

@@ -117,6 +117,7 @@ type Account = {
     | "vote"
     | "heygen"
     | "text_format"
+    | "personal"
   >;
   protected: boolean;
   follower: boolean;
@@ -248,7 +249,7 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
     db.from("user_votes").select("user_id,liked,disliked").in("user_id", ids),
     db
       .from("user_formats")
-      .select("user_id,heygen,text_format")
+      .select("user_id,heygen,text_format,personal")
       .in("user_id", ids),
   ]);
   if (posts.error) throw new Error(posts.error.message);
@@ -262,7 +263,7 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
   return accounts.map((a) => {
     const p = byPosts.get(a.profile.rest_id);
     const v = byVote.get(a.profile.rest_id);
-    // No row means nobody has picked a format yet: both flags off.
+    // No row means nobody has picked a format yet: every flag off.
     const f = byFormat.get(a.profile.rest_id);
     return {
       ...a.profile,
@@ -275,6 +276,7 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
       vote: v?.liked ? "like" : v?.disliked ? "dislike" : "none",
       heygen: f?.heygen ?? false,
       text_format: f?.text_format ?? false,
+      personal: f?.personal ?? false,
     } satisfies CardRow;
   });
 }

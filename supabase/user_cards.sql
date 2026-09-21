@@ -46,11 +46,12 @@ select
     case when v.liked then 'like' when v.disliked then 'dislike' end
   ), 'none') as vote,
 
-  -- Format vote. Two independent flags rather than one folded value: an
-  -- account can be marked for both outputs, or for neither, which is the
-  -- state every account starts in.
+  -- Format vote. Independent flags rather than one folded value: an account
+  -- can be marked for several outputs, or for none, which is the state every
+  -- account starts in.
   coalesce(bool_or(f.heygen), false)      as heygen,
-  coalesce(bool_or(f.text_format), false) as text_format
+  coalesce(bool_or(f.text_format), false) as text_format,
+  coalesce(bool_or(f.personal), false)    as personal
 
 from dm_threads t
 join user_info u

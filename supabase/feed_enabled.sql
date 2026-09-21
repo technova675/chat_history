@@ -56,7 +56,8 @@ select
     case when v.liked then 'like' when v.disliked then 'dislike' end
   ), 'none') as vote,
   coalesce(bool_or(f.heygen), false)      as heygen,
-  coalesce(bool_or(f.text_format), false) as text_format
+  coalesce(bool_or(f.text_format), false) as text_format,
+  coalesce(bool_or(f.personal), false)    as personal
 from dm_threads t
 join user_info u
   on u.rest_id = t.counterparty_id
