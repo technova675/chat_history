@@ -15,7 +15,7 @@ async function loadFile(file: string): Promise<ApifyTweet[]> {
   // request walk out of the project directory.
   const safe = path.basename(file);
   const items = JSON.parse(
-    await readFile(path.join(process.cwd(), safe), "utf8")
+    await readFile(path.join(/*turbopackIgnore: true*/ process.cwd(), safe), "utf8")
   );
   if (!Array.isArray(items)) {
     throw new Error(`${safe} must contain a JSON array of tweets`);
