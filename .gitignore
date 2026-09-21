@@ -56,3 +56,9 @@ __pycache__/
 # Supabase / spreadsheet exports - third-party profile data, re-export as needed
 *.csv
 *.xlsx
+
+# scraped post dump for one account, re-export from Supabase if needed
+hunteronly_posts.json
+
+# local screenshots
+Screenshot *.png
