@@ -2,7 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { toPostRows, type ApifyTweet, type PostRow } from "@/lib/posts";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 1000;
+export const maxDuration = 250;
 
 const ACTOR = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest";
 
