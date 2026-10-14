@@ -1,50 +1,77 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useActor } from "./ActorContext";
+import { viewOf, type OwnerChoices } from "@/lib/actors";
 
 type Format = "heygen" | "text_format" | "personal";
 
+/** Format -> its column in OwnerChoices, and its name in the popup. */
+const FORMATS = {
+  heygen: { key: "heygen_by", label: "HeyGen" },
+  text_format: { key: "text_by", label: "Text" },
+  personal: { key: "personal_by", label: "Personal" },
+} as const;
+
 /**
  * HEYGEN / TEXT / PERSONAL toggles. Unlike the like/dislike pair these are
- * independent: any, all, or none can be on, and all start off.
+ * independent: any, all, or none can be on, and all start off. Each belongs
+ * to one owner at a time.
  */
 export default function FormatButtons({
   userId,
-  initialHeygen,
-  initialText,
-  initialPersonal,
+  choices,
+  onChoices,
 }: {
   userId: string;
-  initialHeygen: boolean;
-  initialText: boolean;
-  initialPersonal: boolean;
+  /** Every owner's picks on this account, held by the card. */
+  choices: OwnerChoices;
+  /** New choices: the optimistic ones, the server's after a save, or the
+   *  previous ones rolled back. */
+  onChoices: (choices: OwnerChoices) => void;
 }) {
-  const [state, setState] = useState<Record<Format, boolean>>({
-    heygen: initialHeygen,
-    text_format: initialText,
-    personal: initialPersonal,
-  });
+  const { actor, askOwner, selectOwner, saveChoice } = useActor();
   const [pending, startTransition] = useTransition();
   const [failed, setFailed] = useState(false);
 
-  const toggle = (format: Format) => {
-    const value = !state[format];
-    const previous = state;
+  // The selected owner's picks, or either owner's on "All".
+  const state: Record<Format, boolean> = viewOf(choices, actor);
 
-    setState({ ...state, [format]: value }); // optimistic
+  const toggle = async (format: Format) => {
+    // On "All" this opens the owner popup; dismissing it saves nothing.
+    const ownerId = await askOwner();
+    if (!ownerId) return;
+
+    const { key, label } = FORMATS[format];
+    // The owner's own pick, not the combined one shown on "All".
+    const value = !choices[key].includes(ownerId);
+    const previous = choices;
+
+    // Optimistic, unless the other owner holds it: that waits for the
+    // "already assigned" question.
+    const heldByOther = choices[key].some((id) => id !== ownerId);
+    if (!value || !heldByOther) {
+      onChoices({
+        ...choices,
+        [key]: value
+          ? [...choices[key], ownerId]
+          : choices[key].filter((id) => id !== ownerId),
+      });
+    }
     setFailed(false);
 
     startTransition(async () => {
       try {
-        const res = await fetch("/api/format", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, format, value }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        const saved = await saveChoice(
+          "/api/format",
+          { userId, ownerId, format, value },
+          label
+        );
+        // null: the takeover was declined, nothing was saved.
+        onChoices(saved ?? previous);
+        if (saved && !actor) selectOwner(ownerId);
       } catch {
-        setState(previous); // roll back
+        onChoices(previous); // roll back
         setFailed(true);
       }
     });

@@ -4,7 +4,9 @@ import type { CardRow } from "@/app/users/UserCard";
 import {
   PAGE_SIZE,
   DEFAULT_SORT,
+  choicesFor,
   parseSort,
+  type OwnerChoices,
   type SortKey,
 } from "@/lib/userCards";
 
@@ -66,8 +68,9 @@ export type Totals = {
  * Non-mutual is Mutual's other side, in the follower direction: Followers
  * minus Mutual, the accounts that follow the owner without a follow-back.
  *
- * Common is across owners rather than within one: the account is in the
- * network (either direction) of two or more owners.
+ * Common is across owners rather than within one: the account follows two or
+ * more owners (vir and sim) - it is in each one's followers list. Accounts the
+ * owners follow do not count.
  *
  * HeyGen, Text and Personal are the format flags from user_formats, the same
  * ones the buttons on the card toggle.
@@ -137,6 +140,8 @@ type Account = {
     | "heygen"
     | "text_format"
     | "personal"
+    | "acted_by"
+    | "choices"
   >;
   protected: boolean;
   follower: boolean;
@@ -156,24 +161,43 @@ type Formats = { heygen: boolean; text_format: boolean; personal: boolean };
  * a row with every flag off, both mean nothing has been picked. The pills need
  * the whole graph's flags, not just the page's, so this cannot wait for
  * withRollups.
+ *
+ * The selected owner's own picks, or either owner's on "All".
+ * Rows from before picks were per owner have no owner_id and count for nobody.
  */
-const loadFormatIndex = cache(async (): Promise<Map<string, Formats>> => {
-  const db = supabaseAdmin();
-  const out = new Map<string, Formats>();
+const loadFormatIndex = cache(
+  async (actor: string | null): Promise<Map<string, Formats>> => {
+    const db = supabaseAdmin();
+    const out = new Map<string, Formats>();
 
-  for (let offset = 0; ; offset += FETCH_PAGE) {
-    const { data, error } = await db
-      .from("user_formats")
-      .select("user_id,heygen,text_format,personal")
-      .or("heygen.eq.true,text_format.eq.true,personal.eq.true")
-      .order("user_id", { ascending: true })
-      .range(offset, offset + FETCH_PAGE - 1);
+    for (let offset = 0; ; offset += FETCH_PAGE) {
+      let q = db
+        .from("user_formats")
+        .select("user_id,owner_id,heygen,text_format,personal")
+        .or("heygen.eq.true,text_format.eq.true,personal.eq.true")
+        .not("owner_id", "is", null);
+      if (actor) q = q.eq("owner_id", actor);
 
-    if (error) throw new Error(error.message);
-    for (const row of data ?? []) out.set(String(row.user_id), row);
-    if (!data || data.length < FETCH_PAGE) return out;
+      const { data, error } = await q
+        .order("user_id", { ascending: true })
+        .order("owner_id", { ascending: true })
+        .range(offset, offset + FETCH_PAGE - 1);
+
+      if (error) throw new Error(error.message);
+      for (const row of data ?? []) {
+        // Both owners' rows fold to one: a format is on if either picked it.
+        const id = String(row.user_id);
+        const prev = out.get(id);
+        out.set(id, {
+          heygen: row.heygen || (prev?.heygen ?? false),
+          text_format: row.text_format || (prev?.text_format ?? false),
+          personal: row.personal || (prev?.personal ?? false),
+        });
+      }
+      if (!data || data.length < FETCH_PAGE) return out;
+    }
   }
-});
+);
 
 /**
  * The whole graph for one owner (or for both, when ownerId is null), folded to
@@ -189,12 +213,18 @@ const loadFormatIndex = cache(async (): Promise<Map<string, Formats>> => {
  *
  * `common` needs every owner's edges, so a single-owner graph also builds the
  * all-owners one to look it up - the graph is small enough that this is cheap.
+ *
+ * actor only decides the format flags: the HeyGen / Text / Personal pills are
+ * the selected owner's own picks.
  */
-const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
+const buildGraph = cache(async (
+  ownerId: string | null,
+  actor: string | null
+): Promise<Account[]> => {
   const [followerEdges, followingEdges, formats] = await Promise.all([
     loadEdges("followers", ownerId),
     loadEdges("following", ownerId),
-    loadFormatIndex(),
+    loadFormatIndex(actor),
   ]);
 
   // (rest_id -> owner_id -> directions), plus the freshest profile seen.
@@ -225,7 +255,7 @@ const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
 
   const commonIds = ownerId
     ? new Set(
-        (await buildGraph(null))
+        (await buildGraph(null, actor))
           .filter((a) => a.common)
           .map((a) => a.profile.rest_id)
       )
@@ -251,9 +281,12 @@ const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
       nonMutual ||= d.f && !d.g;
     }
 
+    // Followers only: an owner merely following the account does not count.
+    let followedOwners = 0;
+    for (const d of owners.values()) if (d.f) followedOwners++;
     const common = commonIds
       ? commonIds.has(edge.rest_id)
-      : owners.size >= 2;
+      : followedOwners >= 2;
 
     out.push({
       profile: {
@@ -295,17 +328,28 @@ const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
 });
 
 /** The graph narrowed to one pill. */
-async function select(ownerId: string | null, relation: RelationFilter) {
-  const accounts = await buildGraph(ownerId);
+async function select(
+  ownerId: string | null,
+  relation: RelationFilter,
+  actor: string | null
+) {
+  const accounts = await buildGraph(ownerId, actor);
   return relation ? accounts.filter((a) => a[relation]) : accounts;
 }
 
 /**
- * Post rollup and vote for one page of accounts. Both are per-account features
- * that sit above either direction, so they join here rather than in the graph
- * - and only for the twenty rows about to be rendered.
+ * Post rollup and votes for one page of accounts. Both are per-account
+ * features that sit above either direction, so they join here rather than in
+ * the graph - and only for the twenty rows about to be rendered.
+ *
+ * Votes and format picks are read for both owners: the buttons show the
+ * selected owner's own (both combined on "All"), the V / S badges show who
+ * has made any.
  */
-async function withRollups(accounts: Account[]): Promise<CardRow[]> {
+async function withRollups(
+  accounts: Account[],
+  actor: string | null
+): Promise<CardRow[]> {
   if (accounts.length === 0) return [];
 
   const db = supabaseAdmin();
@@ -316,25 +360,47 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
       .from("user_posts_summary")
       .select("author_id,posts,total_views,median_views,max_views")
       .in("author_id", ids),
-    db.from("user_votes").select("user_id,liked,disliked").in("user_id", ids),
+    db
+      .from("user_votes")
+      .select("user_id,owner_id,liked,disliked")
+      .in("user_id", ids)
+      .not("owner_id", "is", null),
     db
       .from("user_formats")
-      .select("user_id,heygen,text_format,personal")
-      .in("user_id", ids),
+      .select("user_id,owner_id,heygen,text_format,personal")
+      .in("user_id", ids)
+      .not("owner_id", "is", null),
   ]);
   if (posts.error) throw new Error(posts.error.message);
   if (votes.error) throw new Error(votes.error.message);
   if (formats.error) throw new Error(formats.error.message);
 
   const byPosts = new Map(posts.data?.map((p) => [p.author_id, p]) ?? []);
-  const byVote = new Map(votes.data?.map((v) => [v.user_id, v]) ?? []);
-  const byFormat = new Map(formats.data?.map((f) => [f.user_id, f]) ?? []);
+
+  // No row means nobody has voted or picked a format yet: every list empty.
+  const choices = new Map<string, OwnerChoices>();
+  const choicesOf = (id: string) => {
+    let c = choices.get(id);
+    if (!c) {
+      c = { liked_by: [], disliked_by: [], heygen_by: [], text_by: [], personal_by: [] };
+      choices.set(id, c);
+    }
+    return c;
+  };
+  for (const v of votes.data ?? []) {
+    const c = choicesOf(String(v.user_id));
+    if (v.liked) c.liked_by.push(v.owner_id);
+    if (v.disliked) c.disliked_by.push(v.owner_id);
+  }
+  for (const f of formats.data ?? []) {
+    const c = choicesOf(String(f.user_id));
+    if (f.heygen) c.heygen_by.push(f.owner_id);
+    if (f.text_format) c.text_by.push(f.owner_id);
+    if (f.personal) c.personal_by.push(f.owner_id);
+  }
 
   return accounts.map((a) => {
     const p = byPosts.get(a.profile.rest_id);
-    const v = byVote.get(a.profile.rest_id);
-    // No row means nobody has picked a format yet: every flag off.
-    const f = byFormat.get(a.profile.rest_id);
     return {
       ...a.profile,
       // Null until their tweets are scraped, which the UI renders as a dash
@@ -343,10 +409,7 @@ async function withRollups(accounts: Account[]): Promise<CardRow[]> {
       total_views: p?.total_views ?? null,
       median_views: p?.median_views ?? null,
       max_views: p?.max_views ?? null,
-      vote: v?.liked ? "like" : v?.disliked ? "dislike" : "none",
-      heygen: f?.heygen ?? false,
-      text_format: f?.text_format ?? false,
-      personal: f?.personal ?? false,
+      ...choicesFor(choicesOf(a.profile.rest_id), actor),
     } satisfies CardRow;
   });
 }
@@ -443,18 +506,20 @@ export async function loadSocialCards(
   relation: RelationFilter,
   offset: number,
   limit: number,
-  sort: SortKey = DEFAULT_SORT
+  sort: SortKey = DEFAULT_SORT,
+  actor: string | null = null
 ): Promise<CardRow[]> {
-  const rows = await sortAccounts(await select(ownerId, relation), sort);
-  return withRollups(rows.slice(offset, offset + limit));
+  const rows = await sortAccounts(await select(ownerId, relation, actor), sort);
+  return withRollups(rows.slice(offset, offset + limit), actor);
 }
 
 /** Header totals, over the current selection. */
 export async function loadSocialTotals(
   ownerId: string | null,
-  relation: RelationFilter
+  relation: RelationFilter,
+  actor: string | null = null
 ): Promise<Totals> {
-  const rows = await select(ownerId, relation);
+  const rows = await select(ownerId, relation, actor);
   return {
     profiles: rows.length,
     mutual: rows.filter((a) => a.mutual).length,
@@ -464,8 +529,11 @@ export async function loadSocialTotals(
 }
 
 /** Row counts for the filter pills. */
-export async function loadSocialCounts(ownerId: string | null) {
-  const accounts = await buildGraph(ownerId);
+export async function loadSocialCounts(
+  ownerId: string | null,
+  actor: string | null = null
+) {
+  const accounts = await buildGraph(ownerId, actor);
   return {
     all: accounts.length,
     follower: accounts.filter((a) => a.follower).length,

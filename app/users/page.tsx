@@ -2,7 +2,9 @@ import { supabaseAdmin } from "@/lib/supabase";
 import OwnerPicker, { type Owner } from "./OwnerPicker";
 import UsersFeed from "./UsersFeed";
 import SortPicker from "./SortPicker";
+import { ActorProvider } from "./ActorContext";
 import { compact } from "@/lib/format";
+import { parseActor } from "@/lib/actors";
 import {
   loadCards,
   loadCounts,
@@ -122,17 +124,21 @@ export default async function UsersPage(props: PageProps<"/users">) {
       ? vote
       : null;
   const sort = parseSort(sortParam);
+  // Votes and format picks are saved for the selected owner, and the pills
+  // and the cards' buttons show theirs. On "All" a click asks which owner.
+  const actor = parseActor(ownerId);
 
   // Only the first page of cards is fetched here; UsersFeed pulls the rest
   // through /api/users as the grid scrolls.
   const [users, counts, totals, owners] = await Promise.all([
-    loadCards(ownerId, voteFilter, 0, PAGE_SIZE, sort, extra),
-    loadCounts(ownerId),
-    loadTotals(ownerId, voteFilter, extra),
+    loadCards(ownerId, voteFilter, 0, PAGE_SIZE, sort, extra, actor),
+    loadCounts(ownerId, actor),
+    loadTotals(ownerId, voteFilter, extra, actor),
     loadOwners(),
   ]);
 
   return (
+    <ActorProvider actor={actor}>
     <main className="min-h-screen bg-black px-6 py-12">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-8">
         {/* Sticky, like /network: the pills and the owner picker are the
@@ -265,5 +271,6 @@ export default async function UsersPage(props: PageProps<"/users">) {
         )}
       </div>
     </main>
+    </ActorProvider>
   );
 }

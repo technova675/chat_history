@@ -3,7 +3,7 @@
 -- time rather than every profile on every visit.
 --
 -- Requires: schema.sql, owners.sql, add_owner_id.sql, user_info.sql,
---           user_posts.sql, user_votes, user_formats.sql.
+--           user_posts.sql, user_votes, user_formats.sql, votes_by_owner.sql.
 -- Run in the Supabase SQL editor. Safe to re-run.
 
 -- Dropped rather than replaced: `create or replace view` refuses a changed
@@ -40,26 +40,31 @@ select
   max(s.median_views) as median_views,
   max(s.max_views)    as max_views,
 
-  -- Vote, folded to a single value so the pills can filter in SQL.
-  -- 'none' rather than null keeps the filter a plain equality test.
-  coalesce(max(
-    case when v.liked then 'like' when v.disliked then 'dislike' end
-  ), 'none') as vote,
-
-  -- Format vote. Independent flags rather than one folded value: an account
-  -- can be marked for several outputs, or for none, which is the state every
-  -- account starts in.
-  coalesce(bool_or(f.heygen), false)      as heygen,
-  coalesce(bool_or(f.text_format), false) as text_format,
-  coalesce(bool_or(f.personal), false)    as personal
+  -- Votes and format picks are per owner (votes_by_owner.sql): each column is
+  -- the owners who made that choice. '{}' rather than null when nobody has, so
+  -- the pills can filter with cs / not cs / eq '{}' without a null case.
+  -- Rows from before votes were per owner have no owner_id and are left out.
+  coalesce((select array_agg(v.owner_id) from user_votes v
+            where v.user_id = u.rest_id and v.owner_id is not null and v.liked),
+           '{}'::text[]) as liked_by,
+  coalesce((select array_agg(v.owner_id) from user_votes v
+            where v.user_id = u.rest_id and v.owner_id is not null and v.disliked),
+           '{}'::text[]) as disliked_by,
+  coalesce((select array_agg(f.owner_id) from user_formats f
+            where f.user_id = u.rest_id and f.owner_id is not null and f.heygen),
+           '{}'::text[]) as heygen_by,
+  coalesce((select array_agg(f.owner_id) from user_formats f
+            where f.user_id = u.rest_id and f.owner_id is not null and f.text_format),
+           '{}'::text[]) as text_by,
+  coalesce((select array_agg(f.owner_id) from user_formats f
+            where f.user_id = u.rest_id and f.owner_id is not null and f.personal),
+           '{}'::text[]) as personal_by
 
 from dm_threads t
 join user_info u
   on u.rest_id = t.counterparty_id
  and u.screen_name is not null
 left join user_posts_summary s on s.author_id = u.rest_id
-left join user_votes v         on v.user_id   = u.rest_id
-left join user_formats f       on f.user_id   = u.rest_id
 -- Said something after the opening message: filters out bots and auto-replies.
 where exists (
   select 1 from dm_messages m
@@ -77,10 +82,12 @@ comment on view user_cards is
 
 -- Header totals for /users. A function, not a view: PostgREST can count rows
 -- but cannot sum a column, and the header needs combined reach.
--- p_owner null = every archive; p_vote null = every vote state.
+-- p_owner null = every archive. The vote filter it used to take went when
+-- votes became per owner; loadTotals in lib/userCards.ts does the filtered
+-- totals.
+drop function if exists user_card_totals(text, text);
 create or replace function user_card_totals(
-  p_owner text default null,
-  p_vote  text default null
+  p_owner text default null
 )
 returns table (
   profiles       bigint,
@@ -97,6 +104,5 @@ as $$
     count(*) filter (where c.can_dm)                 as dm_open,
     coalesce(sum(c.followers), 0)::bigint            as combined_reach
   from user_cards c
-  where (p_owner is null or c.owner_ids @> array[p_owner])
-    and (p_vote  is null or c.vote = p_vote);
+  where (p_owner is null or c.owner_ids @> array[p_owner]);
 $$;

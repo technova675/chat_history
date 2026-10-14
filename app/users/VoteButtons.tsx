@@ -2,6 +2,9 @@
 
 import { useState, useTransition } from "react";
 
+import { useActor } from "./ActorContext";
+import { viewOf, type OwnerChoices } from "@/lib/actors";
+
 type Vote = "like" | "dislike" | null;
 
 function ThumbUpIcon() {
@@ -40,34 +43,62 @@ function ThumbDownIcon() {
 
 export default function VoteButtons({
   userId,
-  initialVote,
+  choices,
+  onChoices,
 }: {
   userId: string;
-  initialVote: Vote;
+  /** Every owner's votes on this account, held by the card. */
+  choices: OwnerChoices;
+  /** New choices: the optimistic ones, the server's after a save, or the
+   *  previous ones rolled back. */
+  onChoices: (choices: OwnerChoices) => void;
 }) {
-  const [vote, setVote] = useState<Vote>(initialVote);
+  const { actor, askOwner, selectOwner, saveChoice } = useActor();
   const [pending, startTransition] = useTransition();
   const [failed, setFailed] = useState(false);
 
-  const cast = (next: Vote) => {
-    // Clicking the active button clears the vote.
-    const value = vote === next ? null : next;
-    const previous = vote;
+  // The selected owner's vote, or either owner's on "All".
+  const vote: Vote = (() => {
+    const v = viewOf(choices, actor).vote;
+    return v === "none" ? null : v;
+  })();
 
-    setVote(value); // optimistic
+  const cast = async (next: "like" | "dislike") => {
+    // On "All" this opens the owner popup; dismissing it saves nothing.
+    const ownerId = await askOwner();
+    if (!ownerId) return;
+
+    const list = next === "like" ? "liked_by" : "disliked_by";
+    // Clicking your own active vote clears it. The owner's own vote, not the
+    // combined one shown on "All".
+    const value: Vote = choices[list].includes(ownerId) ? null : next;
+    const previous = choices;
+
+    // Optimistic, unless the other owner holds it: that waits for the
+    // "already assigned" question.
+    const heldByOther = choices[list].some((id) => id !== ownerId);
+    if (value === null || !heldByOther) {
+      const without = (ids: string[]) => ids.filter((id) => id !== ownerId);
+      onChoices({
+        ...choices,
+        liked_by: [...without(choices.liked_by), ...(value === "like" ? [ownerId] : [])],
+        disliked_by: [...without(choices.disliked_by), ...(value === "dislike" ? [ownerId] : [])],
+      });
+    }
     setFailed(false);
 
     startTransition(async () => {
       try {
-        const res = await fetch("/api/vote", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, vote: value }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        const saved = await saveChoice(
+          "/api/vote",
+          { userId, ownerId, vote: value },
+          next === "like" ? "Like" : "Dislike"
+        );
+        // null: the takeover was declined, nothing was saved.
+        onChoices(saved ?? previous);
+        if (saved && !actor) selectOwner(ownerId);
       } catch {
-        setVote(previous); // roll back
+        onChoices(previous); // roll back
         setFailed(true);
       }
     });

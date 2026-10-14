@@ -4,6 +4,7 @@ import {
   parseSort,
   type VoteFilter,
 } from "@/lib/userCards";
+import { parseActor } from "@/lib/actors";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,8 @@ export async function GET(request: Request) {
       offset,
       limit,
       sort,
-      extra
+      extra,
+      parseActor(owner)
     );
 
     return Response.json({ users, offset, limit });

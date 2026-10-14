@@ -2,7 +2,9 @@ import { supabaseAdmin } from "@/lib/supabase";
 import OwnerPicker, { type Owner } from "@/app/users/OwnerPicker";
 import UsersFeed from "@/app/users/UsersFeed";
 import SortPicker from "@/app/users/SortPicker";
+import { ActorProvider } from "@/app/users/ActorContext";
 import { compact } from "@/lib/format";
+import { parseActor } from "@/lib/actors";
 import {
   loadSocialCards,
   loadSocialCounts,
@@ -67,7 +69,7 @@ function RelationPills({
     { key: "mutual" as const, label: "Mutual", count: counts.mutual, on: "border-emerald-700 bg-emerald-950/60 text-emerald-400" },
     // Followers minus Mutual: follows the owner without a follow-back.
     { key: "non_mutual" as const, label: "Non-mutual", count: counts.non_mutual, on: "border-amber-800 bg-amber-950/60 text-amber-400" },
-    // In the network of two or more owners.
+    // Follows two or more owners: in each one's followers list.
     { key: "common" as const, label: "Common", count: counts.common, on: "border-fuchsia-800 bg-fuchsia-950/60 text-fuchsia-400" },
     // Format flags, in the colours of the card's own format buttons.
     { key: "heygen" as const, label: "HeyGen", count: counts.heygen, on: "border-violet-700 bg-violet-950/60 text-violet-300" },
@@ -103,17 +105,21 @@ export default async function NetworkPage(props: PageProps<"/network">) {
   const ownerId = typeof owner === "string" && owner ? owner : null;
   const relation = parseRelation(rel);
   const sort = parseSort(sortParam);
+  // Votes and format picks are saved for the selected owner, and the pills
+  // and the cards' buttons show theirs. On "All" a click asks which owner.
+  const actor = parseActor(ownerId);
 
   // Only the first page of cards is fetched here; UsersFeed pulls the rest
   // through /api/network as the grid scrolls.
   const [users, counts, totals, owners] = await Promise.all([
-    loadSocialCards(ownerId, relation, 0, PAGE_SIZE, sort),
-    loadSocialCounts(ownerId),
-    loadSocialTotals(ownerId, relation),
+    loadSocialCards(ownerId, relation, 0, PAGE_SIZE, sort, actor),
+    loadSocialCounts(ownerId, actor),
+    loadSocialTotals(ownerId, relation, actor),
     loadOwners(),
   ]);
 
   return (
+    <ActorProvider actor={actor}>
     <main className="min-h-screen bg-black px-6 py-12">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-8">
         {/* Sticky: the pills and the owner picker are the controls for the
@@ -210,5 +216,6 @@ export default async function NetworkPage(props: PageProps<"/network">) {
         )}
       </div>
     </main>
+    </ActorProvider>
   );
 }

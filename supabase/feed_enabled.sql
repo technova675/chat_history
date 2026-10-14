@@ -52,20 +52,27 @@ select
   max(s.avg_views)    as avg_views,
   max(s.median_views) as median_views,
   max(s.max_views)    as max_views,
-  coalesce(max(
-    case when v.liked then 'like' when v.disliked then 'dislike' end
-  ), 'none') as vote,
-  coalesce(bool_or(f.heygen), false)      as heygen,
-  coalesce(bool_or(f.text_format), false) as text_format,
-  coalesce(bool_or(f.personal), false)    as personal
+  coalesce((select array_agg(v.owner_id) from user_votes v
+            where v.user_id = u.rest_id and v.owner_id is not null and v.liked),
+           '{}'::text[]) as liked_by,
+  coalesce((select array_agg(v.owner_id) from user_votes v
+            where v.user_id = u.rest_id and v.owner_id is not null and v.disliked),
+           '{}'::text[]) as disliked_by,
+  coalesce((select array_agg(f.owner_id) from user_formats f
+            where f.user_id = u.rest_id and f.owner_id is not null and f.heygen),
+           '{}'::text[]) as heygen_by,
+  coalesce((select array_agg(f.owner_id) from user_formats f
+            where f.user_id = u.rest_id and f.owner_id is not null and f.text_format),
+           '{}'::text[]) as text_by,
+  coalesce((select array_agg(f.owner_id) from user_formats f
+            where f.user_id = u.rest_id and f.owner_id is not null and f.personal),
+           '{}'::text[]) as personal_by
 from dm_threads t
 join user_info u
   on u.rest_id = t.counterparty_id
  and u.screen_name is not null
  and u.feed_enabled
 left join user_posts_summary s on s.author_id = u.rest_id
-left join user_votes v         on v.user_id   = u.rest_id
-left join user_formats f       on f.user_id   = u.rest_id
 where exists (
   select 1 from dm_messages m
   where m.sender_id = u.rest_id and m.seq > 0
@@ -82,9 +89,9 @@ comment on view user_cards is
    owner_ids=cs.{<owner_id>}.';
 
 -- user_card_totals reads user_cards, which the cascade above dropped.
+drop function if exists user_card_totals(text, text);
 create or replace function user_card_totals(
-  p_owner text default null,
-  p_vote  text default null
+  p_owner text default null
 )
 returns table (
   profiles bigint, verified bigint, dm_open bigint, combined_reach bigint
@@ -98,8 +105,7 @@ as $$
     count(*) filter (where c.can_dm)           as dm_open,
     coalesce(sum(c.followers), 0)::bigint      as combined_reach
   from user_cards c
-  where (p_owner is null or c.owner_ids @> array[p_owner])
-    and (p_vote  is null or c.vote = p_vote);
+  where (p_owner is null or c.owner_ids @> array[p_owner]);
 $$;
 
 -- Should be 482.

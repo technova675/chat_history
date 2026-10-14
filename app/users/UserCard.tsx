@@ -1,8 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import VoteButtons from "./VoteButtons";
 import FormatButtons from "./FormatButtons";
 import ChatButton from "./ChatButton";
+import { useActor } from "./ActorContext";
+import { ACTORS, viewOf, type OwnerChoices } from "@/lib/actors";
 import { compact } from "@/lib/format";
 
 /** One row of the user_cards view. */
@@ -22,11 +25,18 @@ export type CardRow = {
   total_views: number | null;
   median_views: number | null;
   max_views: number | null;
+  /** The selected owner's own vote and format picks, or both owners'
+   *  combined on "All". Formats are independent of each other and the vote. */
   vote: "like" | "dislike" | "none";
-  /** Format vote: independent of each other and of the like/dislike vote. */
   heygen: boolean;
   text_format: boolean;
   personal: boolean;
+  /** Owners who have voted or picked a format on this account: the V / S
+   *  badges on Common cards. */
+  acted_by: string[];
+  /** Every owner's choices, so a click under "All" can toggle from the state
+   *  of the owner picked in the popup rather than from the combined view. */
+  choices: OwnerChoices;
   /** In two or more owners' data: their follow graphs on /network, their DM
    *  archives on /users. */
   common?: boolean;
@@ -81,6 +91,14 @@ export default function UserCard({
    *  back arrow returns to the right list and filter. */
   from?: string;
 }) {
+  const { actor } = useActor();
+
+  // Every owner's votes and format picks, held here so a click - including a
+  // takeover that turns the other owner's off - updates the buttons and the
+  // V / S badges together, without a page load.
+  const [choices, setChoices] = useState(user.choices);
+  const actedBy = new Set(viewOf(choices, actor).acted_by);
+
   return (
     <article className="flex flex-col gap-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-5 transition-colors hover:border-neutral-700">
       <div className="flex items-center gap-2">
@@ -163,6 +181,27 @@ export default function UserCard({
           </span>
         )}
 
+        {/* Who has voted or picked a format here. Common cards only: those
+            are the ones both of you might review. Lit = done, dim = not yet. */}
+        {user.common &&
+          ACTORS.map((a) => (
+            <span
+              key={a.ownerId}
+              title={
+                actedBy.has(a.ownerId)
+                  ? `${a.name} has voted or picked a format`
+                  : `${a.name} has not voted yet`
+              }
+              className={`rounded border px-1.5 py-0.5 font-bold ${
+                actedBy.has(a.ownerId)
+                  ? "border-sky-700 bg-sky-950/60 text-sky-300"
+                  : "border-neutral-800 text-neutral-600"
+              }`}
+            >
+              {a.letter}
+            </span>
+          ))}
+
         {user.can_dm && (
           <span className="rounded border border-emerald-900 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-500">
             DMs open
@@ -171,14 +210,14 @@ export default function UserCard({
 
         <VoteButtons
           userId={user.rest_id}
-          initialVote={user.vote === "none" ? null : user.vote}
+          choices={choices}
+          onChoices={setChoices}
         />
 
         <FormatButtons
           userId={user.rest_id}
-          initialHeygen={user.heygen}
-          initialText={user.text_format}
-          initialPersonal={user.personal}
+          choices={choices}
+          onChoices={setChoices}
         />
 
         {/* ml-auto lives here, not on ChatButton: the pair is pushed right

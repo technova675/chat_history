@@ -1,4 +1,5 @@
 import { loadSocialCards, parseRelation, parseSort } from "@/lib/socialCards";
+import { parseActor } from "@/lib/actors";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,14 @@ export async function GET(request: Request) {
     const relation = parseRelation(params.get("rel"));
     const sort = parseSort(params.get("sort"));
 
-    const users = await loadSocialCards(owner || null, relation, offset, limit, sort);
+    const users = await loadSocialCards(
+      owner || null,
+      relation,
+      offset,
+      limit,
+      sort,
+      parseActor(owner)
+    );
 
     return Response.json({ users, offset, limit });
   } catch (err) {
