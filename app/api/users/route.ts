@@ -1,9 +1,14 @@
-import { loadCards, parseSort, type VoteFilter } from "@/lib/userCards";
+import {
+  loadCards,
+  parseExtraFilter,
+  parseSort,
+  type VoteFilter,
+} from "@/lib/userCards";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/users?offset=&limit=&owner=&vote=&sort=
+ * GET /api/users?offset=&limit=&owner=&vote=&filter=&sort=
  *
  * Pages the card feed. The first page is server-rendered by /users; this
  * serves every page after it as the grid scrolls.
@@ -20,8 +25,16 @@ export async function GET(request: Request) {
         ? voteParam
         : null;
     const sort = parseSort(params.get("sort"));
+    const extra = parseExtraFilter(params.get("filter"));
 
-    const users = await loadCards(owner || null, vote, offset, limit, sort);
+    const users = await loadCards(
+      owner || null,
+      extra ? null : vote,
+      offset,
+      limit,
+      sort,
+      extra
+    );
 
     return Response.json({ users, offset, limit });
   } catch (err) {

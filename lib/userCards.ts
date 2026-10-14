@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { supabaseAdmin } from "@/lib/supabase";
 import { HIDDEN_ACCOUNT_IDS } from "@/lib/hiddenAccounts";
 import type { CardRow } from "@/app/users/UserCard";
@@ -6,7 +7,7 @@ import type { CardRow } from "@/app/users/UserCard";
 export const CARD_COLUMNS =
   "rest_id,screen_name,name,description,location,followers,following,tweets," +
   "is_blue_verified,can_dm,avatar_url,posts,total_views,median_views," +
-  "max_views,vote,heygen,text_format,personal";
+  "max_views,vote,heygen,text_format,personal,owner_ids";
 
 /** Rows per page: the server renders the first, /api/users serves the rest. */
 export const PAGE_SIZE = 20;
@@ -50,11 +51,69 @@ export function sortColumn(sort: SortKey): {
 
 export type VoteFilter = "like" | "dislike" | "none" | null;
 
+/**
+ * `?filter=`, the pills that are not a vote. Common is accounts in two or more
+ * owners' archives; the other three are the format flags from user_formats.
+ * Exclusive with the vote pills: one pill is on at a time.
+ */
+export const EXTRA_FILTERS = ["common", "heygen", "text", "personal"] as const;
+
+export type ExtraFilter = (typeof EXTRA_FILTERS)[number] | null;
+
+export function parseExtraFilter(value: unknown): ExtraFilter {
+  return EXTRA_FILTERS.includes(value as (typeof EXTRA_FILTERS)[number])
+    ? (value as ExtraFilter)
+    : null;
+}
+
+/** Format pill -> its user_cards column. */
+const FORMAT_COLUMNS = {
+  heygen: "heygen",
+  text: "text_format",
+  personal: "personal",
+} as const;
+
 /** Pre-joined once: this is ~7.7KB of URL and never changes at runtime. */
 const HIDDEN_LIST = `(${HIDDEN_ACCOUNT_IDS.join(",")})`;
 
-/** Shared filter, so the page and the paging route can never disagree. */
-function query(ownerId: string | null, vote: VoteFilter, count = false) {
+/**
+ * Accounts in two or more archives. PostgREST cannot filter on an array's
+ * length, so the ids are read here (one small column over ~900 rows, once per
+ * request) and the feed is narrowed with rest_id=in.(...) instead.
+ */
+const loadCommonIds = cache(async (): Promise<string[]> => {
+  const db = supabaseAdmin();
+  const ids: string[] = [];
+  const page = 1000;
+  for (let from = 0; ; from += page) {
+    const { data, error } = await db
+      .from("user_cards")
+      .select("rest_id,owner_ids")
+      .order("rest_id", { ascending: true })
+      .range(from, from + page - 1);
+
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) {
+      if ((row.owner_ids ?? []).length >= 2) ids.push(String(row.rest_id));
+    }
+    if (!data || data.length < page) return ids;
+  }
+});
+
+/**
+ * Shared filter, so the page and the paging route can never disagree.
+ *
+ * Synchronous on purpose, with the common ids passed in: the query builder is
+ * a thenable, so an async version would run the query the moment it returned.
+ * commonIds is only read when extra is "common".
+ */
+function query(
+  ownerId: string | null,
+  vote: VoteFilter,
+  extra: ExtraFilter,
+  commonIds: string[],
+  count = false
+) {
   const db = supabaseAdmin();
   let q = count
     ? // One id column and one row: enough to carry the exact count back in
@@ -66,6 +125,13 @@ function query(ownerId: string | null, vote: VoteFilter, count = false) {
   // owner_ids is an array: one card can belong to several archives.
   if (ownerId) q = q.contains("owner_ids", [ownerId]);
   if (vote) q = q.eq("vote", vote);
+  if (extra === "common") {
+    // "-" matches no rest_id, so an empty list yields no rows rather than a
+    // malformed in.() filter.
+    q = q.in("rest_id", commonIds.length > 0 ? commonIds : ["-"]);
+  } else if (extra) {
+    q = q.eq(FORMAT_COLUMNS[extra], true);
+  }
 
   // Holds the feed at the 482 accounts it showed before the 2026-09-17
   // profile sweep. See lib/hiddenAccounts.ts for why these rows are sound
@@ -80,11 +146,14 @@ export async function loadCards(
   vote: VoteFilter,
   offset: number,
   limit: number,
-  sort: SortKey = DEFAULT_SORT
-) {
+  sort: SortKey = DEFAULT_SORT,
+  extra: ExtraFilter = null
+): Promise<CardRow[]> {
   const { column, ascending } = sortColumn(sort);
 
-  const { data, error } = await query(ownerId, vote)
+  const commonIds = extra === "common" ? await loadCommonIds() : [];
+
+  const { data, error } = await query(ownerId, vote, extra, commonIds)
     // nullsFirst: false in BOTH directions. An account with no scraped posts
     // has a null rollup, and null is not zero - it has not earned first place
     // on an ascending view sort, so it sorts last either way.
@@ -94,7 +163,14 @@ export async function loadCards(
     .range(offset, offset + limit - 1);
 
   if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as CardRow[];
+  // owner_ids only travels as far as the badge; the card does not need it.
+  const rows = (data ?? []) as unknown as (CardRow & {
+    owner_ids: string[] | null;
+  })[];
+  return rows.map(({ owner_ids, ...row }) => ({
+    ...row,
+    common: (owner_ids ?? []).length >= 2,
+  }));
 }
 
 export type Totals = {
@@ -118,7 +194,8 @@ export type Totals = {
  */
 export async function loadTotals(
   ownerId: string | null,
-  vote: VoteFilter
+  vote: VoteFilter,
+  extra: ExtraFilter = null
 ): Promise<Totals> {
   const totals: Totals = {
     profiles: 0,
@@ -126,10 +203,11 @@ export async function loadTotals(
     dm_open: 0,
     combined_reach: 0,
   };
+  const commonIds = extra === "common" ? await loadCommonIds() : [];
 
   const page = 1000;
   for (let from = 0; ; from += page) {
-    const { data, error } = await query(ownerId, vote)
+    const { data, error } = await query(ownerId, vote, extra, commonIds)
       .select("is_blue_verified,can_dm,followers")
       .range(from, from + page - 1);
 
@@ -153,12 +231,22 @@ export async function loadTotals(
 
 /** Row counts for the filter pills. head:true, so no rows travel. */
 export async function loadCounts(ownerId: string | null) {
-  const [all, like, dislike, none] = await Promise.all(
-    ([null, "like", "dislike", "none"] as VoteFilter[]).map(async (v) => {
-      const { count, error } = await query(ownerId, v, true);
-      if (error) throw new Error(error.message);
-      return count ?? 0;
-    })
-  );
-  return { all, like, dislike, none };
+  const commonIds = await loadCommonIds();
+  const countOf = async (vote: VoteFilter, extra: ExtraFilter) => {
+    const { count, error } = await query(ownerId, vote, extra, commonIds, true);
+    if (error) throw new Error(error.message);
+    return count ?? 0;
+  };
+  const [all, like, dislike, none, common, heygen, text, personal] =
+    await Promise.all([
+      countOf(null, null),
+      countOf("like", null),
+      countOf("dislike", null),
+      countOf("none", null),
+      countOf(null, "common"),
+      countOf(null, "heygen"),
+      countOf(null, "text"),
+      countOf(null, "personal"),
+    ]);
+  return { all, like, dislike, none, common, heygen, text, personal };
 }

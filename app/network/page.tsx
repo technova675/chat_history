@@ -45,6 +45,10 @@ function RelationPills({
     following: number;
     mutual: number;
     non_mutual: number;
+    common: number;
+    heygen: number;
+    text: number;
+    personal: number;
   };
 }) {
   const href = (relation: RelationFilter) => {
@@ -63,6 +67,12 @@ function RelationPills({
     { key: "mutual" as const, label: "Mutual", count: counts.mutual, on: "border-emerald-700 bg-emerald-950/60 text-emerald-400" },
     // Followers minus Mutual: follows the owner without a follow-back.
     { key: "non_mutual" as const, label: "Non-mutual", count: counts.non_mutual, on: "border-amber-800 bg-amber-950/60 text-amber-400" },
+    // In the network of two or more owners.
+    { key: "common" as const, label: "Common", count: counts.common, on: "border-fuchsia-800 bg-fuchsia-950/60 text-fuchsia-400" },
+    // Format flags, in the colours of the card's own format buttons.
+    { key: "heygen" as const, label: "HeyGen", count: counts.heygen, on: "border-violet-700 bg-violet-950/60 text-violet-300" },
+    { key: "text" as const, label: "Text", count: counts.text, on: "border-amber-700 bg-amber-950/60 text-amber-300" },
+    { key: "personal" as const, label: "Personal", count: counts.personal, on: "border-teal-700 bg-teal-950/60 text-teal-300" },
   ];
 
   return (

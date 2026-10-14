@@ -65,15 +65,34 @@ export type Totals = {
  *
  * Non-mutual is Mutual's other side, in the follower direction: Followers
  * minus Mutual, the accounts that follow the owner without a follow-back.
+ *
+ * Common is across owners rather than within one: the account is in the
+ * network (either direction) of two or more owners.
+ *
+ * HeyGen, Text and Personal are the format flags from user_formats, the same
+ * ones the buttons on the card toggle.
  */
 export type RelationFilter =
   | "follower"
   | "following"
   | "mutual"
   | "non_mutual"
+  | "common"
+  | "heygen"
+  | "text"
+  | "personal"
   | null;
 
-const RELATIONS = ["follower", "following", "mutual", "non_mutual"] as const;
+const RELATIONS = [
+  "follower",
+  "following",
+  "mutual",
+  "non_mutual",
+  "common",
+  "heygen",
+  "text",
+  "personal",
+] as const;
 
 export function parseRelation(value: unknown): RelationFilter {
   return RELATIONS.includes(value as (typeof RELATIONS)[number])
@@ -124,7 +143,37 @@ type Account = {
   following: boolean;
   mutual: boolean;
   non_mutual: boolean;
+  common: boolean;
+  heygen: boolean;
+  text: boolean;
+  personal: boolean;
 };
+
+type Formats = { heygen: boolean; text_format: boolean; personal: boolean };
+
+/**
+ * Every account with at least one format flag on. Only those rows: no row, or
+ * a row with every flag off, both mean nothing has been picked. The pills need
+ * the whole graph's flags, not just the page's, so this cannot wait for
+ * withRollups.
+ */
+const loadFormatIndex = cache(async (): Promise<Map<string, Formats>> => {
+  const db = supabaseAdmin();
+  const out = new Map<string, Formats>();
+
+  for (let offset = 0; ; offset += FETCH_PAGE) {
+    const { data, error } = await db
+      .from("user_formats")
+      .select("user_id,heygen,text_format,personal")
+      .or("heygen.eq.true,text_format.eq.true,personal.eq.true")
+      .order("user_id", { ascending: true })
+      .range(offset, offset + FETCH_PAGE - 1);
+
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) out.set(String(row.user_id), row);
+    if (!data || data.length < FETCH_PAGE) return out;
+  }
+});
 
 /**
  * The whole graph for one owner (or for both, when ownerId is null), folded to
@@ -135,13 +184,17 @@ type Account = {
  * mutual of one owner and a one-way follower of the other, and it belongs
  * under both pills - which is not what testing the merged sets would say.
  *
- * cache() dedupes this within a request, so the page's cards + five pill
+ * cache() dedupes this within a request, so the page's cards + six pill
  * counts + totals read the two tables once between them.
+ *
+ * `common` needs every owner's edges, so a single-owner graph also builds the
+ * all-owners one to look it up - the graph is small enough that this is cheap.
  */
 const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
-  const [followerEdges, followingEdges] = await Promise.all([
+  const [followerEdges, followingEdges, formats] = await Promise.all([
     loadEdges("followers", ownerId),
     loadEdges("following", ownerId),
+    loadFormatIndex(),
   ]);
 
   // (rest_id -> owner_id -> directions), plus the freshest profile seen.
@@ -170,6 +223,14 @@ const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
   for (const e of followerEdges) add(e, "f");
   for (const e of followingEdges) add(e, "g");
 
+  const commonIds = ownerId
+    ? new Set(
+        (await buildGraph(null))
+          .filter((a) => a.common)
+          .map((a) => a.profile.rest_id)
+      )
+    : null;
+
   const out: Account[] = [];
   for (const { owners, edge } of accounts.values()) {
     // Rows with no handle cannot be rendered or linked, and the old view
@@ -190,6 +251,10 @@ const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
       nonMutual ||= d.f && !d.g;
     }
 
+    const common = commonIds
+      ? commonIds.has(edge.rest_id)
+      : owners.size >= 2;
+
     out.push({
       profile: {
         rest_id: edge.rest_id,
@@ -205,12 +270,17 @@ const buildGraph = cache(async (ownerId: string | null): Promise<Account[]> => {
         is_blue_verified: null,
         can_dm: null,
         avatar_url: edge.avatar_url,
+        common,
       },
       protected: edge.protected ?? false,
       follower,
       following,
       mutual,
       non_mutual: nonMutual,
+      common,
+      heygen: formats.get(edge.rest_id)?.heygen ?? false,
+      text: formats.get(edge.rest_id)?.text_format ?? false,
+      personal: formats.get(edge.rest_id)?.personal ?? false,
     });
   }
 
@@ -402,5 +472,9 @@ export async function loadSocialCounts(ownerId: string | null) {
     following: accounts.filter((a) => a.following).length,
     mutual: accounts.filter((a) => a.mutual).length,
     non_mutual: accounts.filter((a) => a.non_mutual).length,
+    common: accounts.filter((a) => a.common).length,
+    heygen: accounts.filter((a) => a.heygen).length,
+    text: accounts.filter((a) => a.text).length,
+    personal: accounts.filter((a) => a.personal).length,
   };
 }

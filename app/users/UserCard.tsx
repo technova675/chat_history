@@ -27,6 +27,9 @@ export type CardRow = {
   heygen: boolean;
   text_format: boolean;
   personal: boolean;
+  /** In two or more owners' data: their follow graphs on /network, their DM
+   *  archives on /users. */
+  common?: boolean;
 };
 
 function VerifiedBadge() {
@@ -154,6 +157,12 @@ export default function UserCard({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
+        {user.common && (
+          <span className="rounded border border-fuchsia-900 bg-fuchsia-950/40 px-1.5 py-0.5 text-fuchsia-400">
+            Common
+          </span>
+        )}
+
         {user.can_dm && (
           <span className="rounded border border-emerald-900 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-500">
             DMs open
