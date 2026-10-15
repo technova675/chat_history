@@ -139,6 +139,10 @@ function query(
       db.from("user_cards").select("rest_id", { count: "exact" }).limit(1)
     : db.from("user_cards").select(CARD_COLUMNS);
 
+  // Only accounts with scraped posts. posts is null until their tweets are
+  // fetched, and gt excludes null as well as zero.
+  q = q.gt("posts", 0);
+
   // owner_ids is an array: one card can belong to several archives.
   if (ownerId) q = q.contains("owner_ids", [ownerId]);
 

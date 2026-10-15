@@ -199,6 +199,44 @@ const loadFormatIndex = cache(
   }
 );
 
+type Rollup = {
+  posts: number | null;
+  total_views: number | null;
+  median_views: number | null;
+};
+
+/**
+ * Post rollup for EVERY account, keyed by author_id.
+ *
+ * withRollups reads twenty rows because that is all a page renders. Sorting
+ * by views cannot: the twenty rows to render are not known until the whole
+ * selection has been ordered, and buildGraph needs every account's post count
+ * to drop the ones with none. cache() keeps this to one read per request even
+ * though the page calls the loaders several times.
+ */
+const loadRollupIndex = cache(async (): Promise<Map<string, Rollup>> => {
+  const db = supabaseAdmin();
+  const out = new Map<string, Rollup>();
+
+  for (let offset = 0; ; offset += FETCH_PAGE) {
+    const { data, error } = await db
+      .from("user_posts_summary")
+      .select("author_id,posts,total_views,median_views")
+      .order("author_id", { ascending: true })
+      .range(offset, offset + FETCH_PAGE - 1);
+
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) {
+      out.set(String(row.author_id), {
+        posts: row.posts,
+        total_views: row.total_views,
+        median_views: row.median_views,
+      });
+    }
+    if (!data || data.length < FETCH_PAGE) return out;
+  }
+});
+
 /**
  * The whole graph for one owner (or for both, when ownerId is null), folded to
  * one entry per account.
@@ -221,10 +259,11 @@ const buildGraph = cache(async (
   ownerId: string | null,
   actor: string | null
 ): Promise<Account[]> => {
-  const [followerEdges, followingEdges, formats] = await Promise.all([
+  const [followerEdges, followingEdges, formats, rollups] = await Promise.all([
     loadEdges("followers", ownerId),
     loadEdges("following", ownerId),
     loadFormatIndex(actor),
+    loadRollupIndex(),
   ]);
 
   // (rest_id -> owner_id -> directions), plus the freshest profile seen.
@@ -266,6 +305,8 @@ const buildGraph = cache(async (
     // Rows with no handle cannot be rendered or linked, and the old view
     // dropped them the same way.
     if (!edge.screen_name) continue;
+    // Only accounts with scraped posts; no rollup row means none yet.
+    if (!((rollups.get(edge.rest_id)?.posts ?? 0) > 0)) continue;
 
     let follower = false;
     let following = false;
@@ -413,43 +454,6 @@ async function withRollups(
     } satisfies CardRow;
   });
 }
-
-/**
- * Post rollup for EVERY account, keyed by author_id.
- *
- * withRollups reads twenty rows because that is all a page renders. Sorting
- * by views cannot: the twenty rows to render are not known until the whole
- * selection has been ordered. cache() keeps this to one read per request even
- * though the page calls the loaders several times.
- */
-const loadRollupIndex = cache(
-  async (): Promise<
-    Map<string, { total_views: number | null; median_views: number | null }>
-  > => {
-    const db = supabaseAdmin();
-    const out = new Map<
-      string,
-      { total_views: number | null; median_views: number | null }
-    >();
-
-    for (let offset = 0; ; offset += FETCH_PAGE) {
-      const { data, error } = await db
-        .from("user_posts_summary")
-        .select("author_id,total_views,median_views")
-        .order("author_id", { ascending: true })
-        .range(offset, offset + FETCH_PAGE - 1);
-
-      if (error) throw new Error(error.message);
-      for (const row of data ?? []) {
-        out.set(String(row.author_id), {
-          total_views: row.total_views,
-          median_views: row.median_views,
-        });
-      }
-      if (!data || data.length < FETCH_PAGE) return out;
-    }
-  }
-);
 
 /**
  * The selection in card order.

@@ -21,7 +21,7 @@ const ACTOR = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest
  */
 
 /** Whose graph the queue is drawn from. Overridable with ?owner=. */
-const DEFAULT_OWNER = "3018488785";
+const DEFAULT_OWNER = "958230722292064256";
 
 /** Below this many stored posts an account is considered short-changed. */
 const POSTS_TARGET = 20;

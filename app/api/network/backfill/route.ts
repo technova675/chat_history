@@ -22,7 +22,7 @@ const ACTOR = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest
  */
 
 /** Whose graph the queue is drawn from. Overridable with ?owner=. */
-const DEFAULT_OWNER = "3018488785";
+const DEFAULT_OWNER = "958230722292064256";
 
 /** Only posts from this calendar year (UTC) are written. */
 const KEEP_YEAR = 2026;
@@ -205,11 +205,11 @@ async function loadQueue(ownerId: string): Promise<Candidate[]> {
 
 /** One synchronous actor run for one handle. */
 async function runActor(screenName: string): Promise<ApifyTweet[]> {
-  // First Apify account only. No fallback to APIFY_TOKEN_2: that token belongs
-  // to the other tab, and borrowing it would put two sweeps on one account's
-  // concurrent-run cap.
-  const token = process.env.APIFY_TOKEN;
-  if (!token) throw new Error("APIFY_TOKEN must be set in .env.local");
+  // Second Apify account only, shared with /network/scrape2. No fallback to
+  // APIFY_TOKEN: that token belongs to the refill tab, and borrowing it would
+  // put two sweeps on one account's concurrent-run cap.
+  const token = process.env.APIFY_TOKEN_2;
+  if (!token) throw new Error("APIFY_TOKEN_2 must be set in .env.local");
 
   const res = await fetch(
     `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items?token=${token}`,
