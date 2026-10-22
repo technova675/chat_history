@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import SweepOwnerSelect, { useSweepOwner } from "../SweepOwner";
 
 /**
- * Driver for the re-fill sweep: accounts that were scraped in a batch and came
- * back with fewer than twenty posts. One actor run per handle, `from:<handle>`,
- * so the twenty results all belong to that account instead of being split
- * across a batch of twenty-five.
+ * Driver for the re-fill sweep: every account that already has posts stored,
+ * re-fetched for its latest original posts. One actor run per handle,
+ * `from:<handle> -filter:replies`; only 2026 non-replies are stored.
  *
  * Same shape as /network/scrape - the loop lives in the browser so each step is
  * one billable run and the tab can be closed between any two of them. Amber
@@ -26,7 +26,6 @@ type Queue = {
   total: number;
   remaining: number;
   maxItems: number;
-  followerCeiling: number;
   pending: Candidate[];
 };
 
@@ -36,6 +35,10 @@ type RunResult = {
   imported: number;
   skipped: number;
   duplicates: number;
+  replies: number;
+  retweets: number;
+  otherYear: number;
+  profileRows: number;
   postsBefore: number | null;
   postsAfter: number | null;
   gained: number | null;
@@ -61,9 +64,8 @@ export default function NetworkRefillPage() {
   const stopRef = useRef(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Handles finished this session. An account whose timeline genuinely holds
-  // four posts stays under the threshold no matter how often it is run, so the
-  // queue alone cannot advance the loop - this is what does.
+  // Handles finished this session. An account stays in the queue after its
+  // run, so the queue alone cannot advance the loop - this is what does.
   const attempted = useRef(new Set<string>());
   const [done, setDone] = useState(0);
 
@@ -75,16 +77,13 @@ export default function NetworkRefillPage() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [log]);
 
-  // ?owner= on this page is passed straight through to the queue, so the same
-  // UI drives any owner's graph.
-  const ownerParam = useCallback(() => {
-    if (typeof window === "undefined") return "";
-    const owner = new URLSearchParams(window.location.search).get("owner");
-    return owner ? `?owner=${encodeURIComponent(owner)}` : "";
-  }, []);
+  // Whose graph the queue is drawn from: the dropdown, kept in ?owner= and
+  // passed straight through to the API.
+  const [owner, setOwner] = useSweepOwner();
+  const ownerParam = owner ? `?owner=${encodeURIComponent(owner)}` : "";
 
   const refresh = useCallback(async () => {
-    const res = await fetch(`/api/network/refill${ownerParam()}`);
+    const res = await fetch(`/api/network/refill${ownerParam}`);
     const data = await res.json();
     if (data.error) setError(data.error);
     else setQueue(data);
@@ -92,13 +91,28 @@ export default function NetworkRefillPage() {
   }, [ownerParam]);
 
   useEffect(() => {
+    if (!owner) return;
     refresh().catch((e) => setError(String(e)));
-  }, [refresh]);
+  }, [owner, refresh]);
+
+  // A new owner is a new queue: this session's progress belongs to the old one.
+  const changeOwner = useCallback(
+    (next: string) => {
+      attempted.current.clear();
+      setDone(0);
+      setGained(0);
+      setEmptyRuns(0);
+      setQueue(null);
+      setError(null);
+      setOwner(next);
+    },
+    [setOwner]
+  );
 
   /** One handle: one billable actor run. */
   const runOne = useCallback(
     async (candidate: Candidate, index: number, total: number) => {
-      const res = await fetch(`/api/network/refill${ownerParam()}`, {
+      const res = await fetch(`/api/network/refill${ownerParam}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -121,11 +135,23 @@ export default function NetworkRefillPage() {
 
       if (data.gained !== null) setGained((n) => n + data.gained!);
 
+      // Results the run paid for but did not store.
+      const dropped =
+        (data.replies ? ` · ${data.replies} repl(ies) dropped` : "") +
+        (data.retweets ? ` · ${data.retweets} retweet(s) dropped` : "") +
+        (data.otherYear ? ` · ${data.otherYear} not 2026, dropped` : "") +
+        (data.profileRows ? ` · profile updated (${data.profileRows} row(s))` : "");
+
       if (data.imported === 0) {
         // A paid run that bought no rows. Worth seeing: usually a protected or
-        // emptied timeline.
+        // emptied timeline, or nothing posted in 2026.
         setEmptyRuns((n) => n + 1);
-        say(`${prefix} — actor returned nothing · ${secs}s`, "warn");
+        say(
+          `${prefix} — ` +
+            (data.returned === 0 ? "actor returned nothing" : "nothing to store") +
+            `${dropped} · ${secs}s`,
+          "warn"
+        );
         return;
       }
 
@@ -139,6 +165,7 @@ export default function NetworkRefillPage() {
           (data.gained === 0 ? " (all already stored, counts refreshed)" : "") +
           (data.skipped ? ` · ${data.skipped} skipped` : "") +
           (data.duplicates ? ` · ${data.duplicates} dupe(s)` : "") +
+          dropped +
           ` · ${secs}s`,
         data.gained === 0 ? "info" : "ok"
       );
@@ -191,7 +218,7 @@ export default function NetworkRefillPage() {
   );
 
   // Progress is measured against the queue as it stood when the page loaded:
-  // a handle that comes back still-thin leaves the server-side queue unchanged,
+  // a finished handle leaves the server-side queue unchanged,
   // so the attempted set is the only honest denominator.
   const total = queue?.total ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -212,7 +239,7 @@ export default function NetworkRefillPage() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-5">
         <div className="flex flex-wrap items-baseline gap-3">
           <h1 className="text-[15px] text-slate-100">
-            post re-fill <span className="text-amber-400">· thin timelines</span>
+            post re-fill <span className="text-amber-400">· latest originals</span>
           </h1>
           <a
             href="/network"
@@ -226,30 +253,39 @@ export default function NetworkRefillPage() {
           >
             first-pass sweep
           </a>
+          <div className="ml-auto">
+            <SweepOwnerSelect
+              owner={owner}
+              onChange={changeOwner}
+              disabled={running}
+            />
+          </div>
         </div>
 
         <p className="leading-relaxed text-slate-400">
           Accounts in owner{" "}
           <span className="text-slate-200">{queue?.ownerId ?? "…"}</span>&apos;s
-          graph that already have posts but fewer than{" "}
-          <span className="text-slate-200">{queue?.maxItems ?? 20}</span>, under{" "}
-          <span className="text-slate-200">
-            {compact(queue?.followerCeiling ?? 100000)}
-          </span>{" "}
-          followers, ordered by median views. One actor run per handle with{" "}
-          <span className="text-amber-400">from:@handle</span> — a batch of 25
-          splits its twenty results across the batch, which is how these
-          timelines got short-changed in the first place. Upserted on tweet_id
-          into <span className="text-slate-200">user_posts</span>. Billed per
-          result — up to about ${cost} for the {left} handle(s) left.
+          graph that already have posts stored, fewest posts first. One
+          run of <span className="text-slate-200">apidojo/twitter-scraper-lite</span>{" "}
+          per handle with{" "}
+          <span className="text-amber-400">from:@handle -filter:replies</span>,
+          up to <span className="text-slate-200">{queue?.maxItems ?? 40}</span>{" "}
+          posts, latest first, no date filter. Replies, retweets and posts not
+          from 2026 are dropped; the rest are upserted on tweet_id into{" "}
+          <span className="text-slate-200">user_posts</span>. The account&apos;s
+          post count, followers, following, profile picture and bio are
+          refreshed in <span className="text-slate-200">followers</span> and{" "}
+          <span className="text-slate-200">following</span> for every owner. Billed per result,
+          dropped ones included — up to about ${cost} for the {left} handle(s)
+          left.
         </p>
 
         <div className="rounded border border-amber-900/60 bg-amber-950/20 px-5 py-4 leading-relaxed text-amber-300">
           Keep this tab open — the loop runs in the browser and stops if the page
           is closed. Stopping is safe: finished handles are already stored, and
-          a re-run refreshes engagement counts rather than duplicating posts. An
-          account whose timeline really is that short stays in the queue; it is
-          skipped for the rest of this session once attempted.
+          a re-run refreshes engagement counts rather than duplicating posts.
+          Every account stays in the queue after its run; it is skipped for the
+          rest of this session once attempted.
         </div>
 
         <div className="relative h-7 w-full overflow-hidden rounded-full border border-slate-700/70 bg-[#111823]">

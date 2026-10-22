@@ -12,7 +12,11 @@ reports neither, so a shared table would let a follower import quietly
 downgrade a DM counterparty row. An account in both has a row in each.
 
   python supabase/load_follow_graph.py --dataset path/to/dataset.json \
-      [--owner <owner_id>] [--replace] [--dry-run]
+      [--owner <owner_id>] [--replace | --only-new] [--dry-run]
+
+--only-new inserts just the accounts not already in the table for that owner
+and leaves existing rows untouched; the primary key (owner_id, rest_id) plus
+ignore-duplicates means a re-run can never create a duplicate.
 """
 import argparse, json, os, sys, urllib.parse, urllib.request, urllib.error
 from email.utils import parsedate_to_datetime
@@ -107,13 +111,13 @@ def request(url, key, method="GET", body=None, prefer=None):
         sys.exit(f"\n{method} {url} failed: {e.code} {e.read().decode(errors='replace')}")
 
 
-def upsert(base, key, table, rows, conflict):
+def upsert(base, key, table, rows, conflict, resolution="merge-duplicates"):
     url = f"{base}/rest/v1/{table}?on_conflict={conflict}"
     sent = 0
     for i in range(0, len(rows), BATCH):
         chunk = rows[i:i + BATCH]
         request(url, key, "POST", chunk,
-                "resolution=merge-duplicates,return=minimal")
+                f"resolution={resolution},return=minimal")
         sent += len(chunk)
         print(f"  {table}: {sent}/{len(rows)}", end="\r", flush=True)
     print(f"  {table}: {sent}/{len(rows)} done")
@@ -128,6 +132,17 @@ def wipe(base, key, table, owner_ids):
         request(f"{base}/rest/v1/{table}?owner_id=eq.{q}", key, "DELETE",
                 prefer="return=minimal")
         print(f"  {table}: cleared owner {owner_id}")
+
+
+def existing_ids(base, key, table, owner_id):
+    """Every rest_id already stored in `table` for this owner, paged."""
+    q, ids, page = urllib.parse.quote(owner_id, safe=""), set(), 1000
+    while True:
+        rows = request(f"{base}/rest/v1/{table}?select=rest_id&owner_id=eq.{q}"
+                       f"&order=rest_id&limit={page}&offset={len(ids)}", key)
+        ids.update(r["rest_id"] for r in rows)
+        if len(rows) < page:
+            return ids
 
 
 def resolve_owner(base, key, screen_name):
@@ -148,8 +163,13 @@ def main():
                                     "resolved from each item's target_username")
     ap.add_argument("--replace", action="store_true",
                     help="delete these owners' existing rows in both tables first")
+    ap.add_argument("--only-new", action="store_true",
+                    help="insert only accounts not already stored; never "
+                         "update or delete existing rows")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    if args.replace and args.only_new:
+        sys.exit("--replace and --only-new are mutually exclusive")
 
     env  = load_env(ENV_FILE)
     base = env.get("NEXT_PUBLIC_SUPABASE_URL", "").rstrip("/")
@@ -192,6 +212,15 @@ def main():
           + ", ".join(f"{len(rows)} {t}" for t, rows in seen.items())
           + (f", {skipped} items skipped" if skipped else ""))
 
+    if args.only_new:
+        for table, rows in seen.items():
+            before = len(rows)
+            for owner_id in owner_ids:
+                have = existing_ids(base, key, table, owner_id)
+                for k in [k for k in rows if k[0] == owner_id and k[1] in have]:
+                    del rows[k]
+            print(f"  {table}: {len(rows)} new, {before - len(rows)} already stored")
+
     if args.dry_run:
         print("dry run - nothing uploaded")
         return
@@ -202,7 +231,8 @@ def main():
 
     print("uploading")
     for table, rows in seen.items():
-        upsert(base, key, table, list(rows.values()), "owner_id,rest_id")
+        upsert(base, key, table, list(rows.values()), "owner_id,rest_id",
+               "ignore-duplicates" if args.only_new else "merge-duplicates")
     print("done")
 
 

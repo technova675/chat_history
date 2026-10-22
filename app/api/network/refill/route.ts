@@ -4,59 +4,35 @@ import { toPostRows, type ApifyTweet } from "@/lib/posts";
 export const dynamic = "force-dynamic";
 export const maxDuration = 250;
 
-const ACTOR = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest";
+const ACTOR = "apidojo~twitter-scraper-lite";
 
 /**
- * The re-fill sweep: accounts that WERE scraped but came back thin.
- *
- * The earlier sweeps ran the actor on batches of handles, and a batch run
- * silently short-changes individuals - twenty results are split across the
- * batch, so an account can land four posts instead of twenty. This route runs
- * the actor once per handle, with `from: <handle>`, so the twenty results all
- * belong to that one account.
+ * The re-fill sweep: every account that already has posts stored, re-fetched
+ * for its latest original posts.
  *
  * Deliberately a separate route rather than a flag on /api/network/scrape:
  * that one's queue is "accounts with no posts at all", this one's is "accounts
- * with some but not enough", and the two want different actor inputs.
+ * with posts", and the two want different actor inputs.
  */
 
 /** Whose graph the queue is drawn from. Overridable with ?owner=. */
 const DEFAULT_OWNER = "958230722292064256";
 
-/** Below this many stored posts an account is considered short-changed. */
-const POSTS_TARGET = 20;
+/** Posts requested per handle. */
+const MAX_ITEMS = 40;
 
-/** Accounts above this follower count are out of scope for the sweep. */
-const FOLLOWER_CEILING = 100_000;
+/** Only posts from this calendar year (UTC) are written. */
+const KEEP_YEAR = 2026;
 
 /**
- * Actor input. One handle per run: `from` is the whole query, so every one of
- * the twenty results is that account's. No lang or time window - the batch
- * runs had both, and narrowing the window is part of why these came back thin.
+ * Actor input, less the search term, which is set per handle. No date window
+ * or lang. The query excludes replies but not retweets: adding
+ * -filter:nativeretweets makes this actor return nothing.
  */
 const ACTOR_INPUT = {
-  "filter:blue_verified": false,
-  "filter:consumer_video": false,
-  "filter:has_engagement": false,
-  "filter:hashtags": false,
-  "filter:images": false,
-  "filter:links": false,
-  "filter:media": false,
-  "filter:mentions": false,
-  "filter:native_video": false,
-  "filter:nativeretweets": false,
-  "filter:news": false,
-  "filter:pro_video": false,
-  "filter:quote": false,
-  "filter:replies": false,
-  "filter:safe": false,
-  "filter:spaces": false,
-  "filter:twimg": false,
-  "filter:videos": false,
-  "filter:vine": false,
-  "include:nativeretweets": false,
-  maxItems: POSTS_TARGET,
-  queryType: "Latest",
+  includeSearchTerms: false,
+  maxItems: MAX_ITEMS,
+  sort: "Latest",
 } as const;
 
 /** PostgREST caps a response at 1,000 rows, so a full table is read in pages. */
@@ -151,9 +127,7 @@ export type Candidate = {
  *     from accounts a
  *     join user_posts_summary s on s.author_id = a.rest_id
  *    where a.screen_name is not null
- *      and s.posts < 20
- *      and a.followers < 100000
- *    order by s.median_views desc nulls last, a.rest_id;
+ *    order by s.posts, s.median_views desc nulls last, a.rest_id;
  *
  * The join is an inner one on purpose: `s.posts is not null` is the point of
  * this sweep. An account with no rollup row was never scraped at all, and
@@ -175,16 +149,8 @@ async function loadQueue(ownerId: string): Promise<Candidate[]> {
     if (!seen || e.fetched_at > seen.fetched_at) byId.set(e.rest_id, e);
   }
 
-  // Narrow before the rollup read: no point asking about accounts the
-  // follower ceiling has already ruled out.
-  const eligible = [...byId.values()].filter(
-    (e) =>
-      e.screen_name &&
-      // null followers is unknown, not small - same as `a.followers < 100000`,
-      // which a null never satisfies.
-      e.followers !== null &&
-      e.followers < FOLLOWER_CEILING
-  );
+  // No handle means nothing to search for.
+  const eligible = [...byId.values()].filter((e) => e.screen_name);
 
   const rollups = await loadRollups(eligible.map((e) => e.rest_id));
 
@@ -192,7 +158,6 @@ async function loadQueue(ownerId: string): Promise<Candidate[]> {
   for (const e of eligible) {
     const r = rollups.get(e.rest_id);
     if (!r || r.posts === null) continue; // never scraped - not this sweep's job
-    if (r.posts >= POSTS_TARGET) continue; // already has a full timeline
     out.push({
       rest_id: e.rest_id,
       screen_name: e.screen_name as string,
@@ -202,10 +167,11 @@ async function loadQueue(ownerId: string): Promise<Candidate[]> {
     });
   }
 
-  // median_views desc nulls last, rest_id asc - the card order, so the
-  // accounts worth re-fetching most are bought first.
+  // posts asc, then median_views desc nulls last, rest_id asc - the accounts
+  // with the fewest posts stored are fetched first.
   return out.sort(
     (a, b) =>
+      a.posts - b.posts ||
       (b.median_views ?? -1) - (a.median_views ?? -1) ||
       (a.rest_id < b.rest_id ? -1 : 1)
   );
@@ -225,18 +191,21 @@ async function storedPosts(restId: string): Promise<number> {
 
 /** One synchronous actor run for one handle. */
 async function runActor(screenName: string): Promise<ApifyTweet[]> {
-  // This sweep runs on the FIRST Apify account only. No fallback to
-  // APIFY_TOKEN_2: that token belongs to the other tab, and silently borrowing
-  // it would put two sweeps on one account's concurrent-run cap.
-  const token = process.env.APIFY_TOKEN;
-  if (!token) throw new Error("APIFY_TOKEN must be set in .env.local");
+  // This sweep runs on the SECOND Apify account only. No fallback to
+  // APIFY_TOKEN: silently borrowing it would put two sweeps on one account's
+  // concurrent-run cap.
+  const token = process.env.APIFY_TOKEN_2;
+  if (!token) throw new Error("APIFY_TOKEN_2 must be set in .env.local");
 
   const res = await fetch(
     `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items?token=${token}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...ACTOR_INPUT, from: screenName }),
+      body: JSON.stringify({
+        ...ACTOR_INPUT,
+        searchTerms: [`from:${screenName} -filter:replies`],
+      }),
     }
   );
 
@@ -246,6 +215,57 @@ async function runActor(screenName: string): Promise<ApifyTweet[]> {
 
   const items = await res.json();
   return Array.isArray(items) ? items : [];
+}
+
+/**
+ * Refresh this handle's profile counts in the follow graph from the `author`
+ * object the actor returns on every tweet. Only an author that IS this handle
+ * counts - matched on rest_id when known, else on the handle - so another
+ * account's numbers can never land on this row.
+ *
+ * Every owner's row for the account is updated: the profile is the same
+ * whoever's graph it sits in. fetched_at is left alone - /network/new reads it
+ * as the import date. Returns the number of rows updated across both tables.
+ */
+async function updateProfile(
+  tweets: ApifyTweet[],
+  screenName: string,
+  restId: string | null
+): Promise<number> {
+  const author = tweets
+    .map((t) => t?.author)
+    .find((a) =>
+      restId
+        ? String(a?.id ?? "") === restId
+        : String(a?.userName ?? "").toLowerCase() === screenName.toLowerCase()
+    );
+  if (!author?.id) return 0;
+
+  // A field the actor left out keeps its stored value rather than going null.
+  const patch: Record<string, string | number> = {};
+  if (typeof author.statusesCount === "number") patch.tweets = author.statusesCount;
+  if (typeof author.followers === "number") patch.followers = author.followers;
+  if (typeof author.following === "number") patch.following = author.following;
+  if (typeof author.profilePicture === "string" && author.profilePicture) {
+    patch.avatar_url = author.profilePicture;
+  }
+  // An empty bio is never written: some actors (kaitoeasyapi) send "" here and
+  // keep the real one in profile_bio, and "" would wipe a stored bio.
+  const bio = author.description || author.profile_bio?.description;
+  if (typeof bio === "string" && bio) patch.description = bio;
+  if (Object.keys(patch).length === 0) return 0;
+
+  const db = supabaseAdmin();
+  let updated = 0;
+  for (const table of ["followers", "following"] as const) {
+    const { count, error } = await db
+      .from(table)
+      .update(patch, { count: "exact" })
+      .eq("rest_id", String(author.id));
+    if (error) throw new Error(`updating ${table}: ${error.message}`);
+    updated += count ?? 0;
+  }
+  return updated;
 }
 
 /** GET /api/network/refill?owner=... - the work queue. No actor runs, no charges. */
@@ -260,8 +280,7 @@ export async function GET(request: Request) {
       ownerId,
       total: pending.length,
       remaining: pending.length,
-      maxItems: POSTS_TARGET,
-      followerCeiling: FOLLOWER_CEILING,
+      maxItems: MAX_ITEMS,
       pending,
     });
   } catch (err) {
@@ -292,7 +311,24 @@ export async function POST(request: Request) {
     const before = restId ? await storedPosts(restId) : null;
 
     const tweets = await runActor(screenName);
-    const { rows, skipped, duplicates } = toPostRows(tweets);
+    const mapped = toPostRows(tweets);
+    const { skipped, duplicates } = mapped;
+
+    // The search already excludes replies; this is the guarantee. Retweets are
+    // dropped here rather than in the query (-filter:nativeretweets makes this
+    // actor return nothing), and so are posts from any other year, so only
+    // KEEP_YEAR originals reach the table. All of them are still billed -
+    // Apify charges per result, before this filter.
+    const isRetweet = (r: (typeof mapped.rows)[number]) => Boolean(r.raw?.isRetweet);
+    const replies = mapped.rows.filter((r) => r.is_reply).length;
+    const retweets = mapped.rows.filter((r) => !r.is_reply && isRetweet(r)).length;
+    const original = mapped.rows.filter((r) => !r.is_reply && !isRetweet(r));
+    const otherYear = original.filter(
+      (r) => new Date(r.posted_at).getUTCFullYear() !== KEEP_YEAR
+    ).length;
+    const rows = original.filter(
+      (r) => new Date(r.posted_at).getUTCFullYear() === KEEP_YEAR
+    );
 
     if (rows.length > 0) {
       const db = supabaseAdmin();
@@ -301,6 +337,10 @@ export async function POST(request: Request) {
         .upsert(rows, { onConflict: "tweet_id" });
       if (error) throw new Error(`writing user_posts: ${error.message}`);
     }
+
+    // From every tweet returned, dropped ones included: the author object is
+    // the profile as of this run whether or not the post itself is kept.
+    const profileRows = await updateProfile(tweets, screenName, restId);
 
     // What the run actually bought: rows already stored are refreshed, not
     // added, so `imported` on its own overstates the gain.
@@ -313,6 +353,10 @@ export async function POST(request: Request) {
       imported: rows.length,
       skipped,
       duplicates,
+      replies,
+      retweets,
+      otherYear,
+      profileRows,
       postsBefore: before,
       postsAfter: after,
       gained: before !== null && after !== null ? after - before : null,

@@ -14,3 +14,17 @@ export function compact(n: number | null): string {
   }
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 }
+
+/**
+ * "2026-10-12T08:01:02+00:00" -> "Oct 12, 2026". Fixed locale and zone: the
+ * cards render on the server and again in the browser, and the two have to
+ * print the same string or hydration fails.
+ */
+export function shortDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}

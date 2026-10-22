@@ -3,11 +3,12 @@ import OwnerPicker, { type Owner } from "@/app/users/OwnerPicker";
 import UsersFeed from "@/app/users/UsersFeed";
 import SortPicker from "@/app/users/SortPicker";
 import { ActorProvider } from "@/app/users/ActorContext";
-import { compact } from "@/lib/format";
+import { compact, shortDate } from "@/lib/format";
 import { parseActor } from "@/lib/actors";
 import {
   loadSocialCards,
   loadSocialCounts,
+  loadFetchDates,
   loadSocialTotals,
   parseRelation,
   parseSort,
@@ -111,11 +112,12 @@ export default async function NetworkPage(props: PageProps<"/network">) {
 
   // Only the first page of cards is fetched here; UsersFeed pulls the rest
   // through /api/network as the grid scrolls.
-  const [users, counts, totals, owners] = await Promise.all([
+  const [users, counts, totals, owners, fetchDates] = await Promise.all([
     loadSocialCards(ownerId, relation, 0, PAGE_SIZE, sort, actor),
     loadSocialCounts(ownerId, actor),
     loadSocialTotals(ownerId, relation, actor),
     loadOwners(),
+    loadFetchDates(ownerId, actor),
   ]);
 
   return (
@@ -194,6 +196,25 @@ export default async function NetworkPage(props: PageProps<"/network">) {
               </div>
             ))}
           </dl>
+
+          {/* How far the post data reaches: the latest fetch across each
+              owner's graph. One per owner on "All", since each graph is
+              scraped on its own. */}
+          {fetchDates.size > 0 && (
+            <p className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-neutral-500">
+              {owners
+                .filter((o) => fetchDates.has(o.owner_id))
+                .map((o) => (
+                  <span key={o.owner_id}>
+                    Posts data up to{" "}
+                    <span className="font-medium tabular-nums text-neutral-200">
+                      {shortDate(fetchDates.get(o.owner_id)!)}
+                    </span>{" "}
+                    for @{o.screen_name}
+                  </span>
+                ))}
+            </p>
+          )}
         </header>
 
         {totals.profiles === 0 ? (

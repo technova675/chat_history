@@ -93,7 +93,12 @@ select
   )::bigint                                   as median_views,
 
   -- The viral post as its own fact, rather than smeared across every post.
-  max(p.view_count)                           as max_views
+  max(p.view_count)                           as max_views,
+
+  -- When this account's posts were last fetched: what /network shows as
+  -- "data up to". Not last_post_at - a quiet account's newest post can be
+  -- weeks older than the fetch that found it.
+  max(p.fetched_at)                           as last_fetched_at
 from user_posts p
 left join user_info u on u.rest_id = p.author_id
 group by p.author_id, u.screen_name, u.name, u.followers;

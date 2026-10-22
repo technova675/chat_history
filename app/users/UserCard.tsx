@@ -6,7 +6,7 @@ import FormatButtons from "./FormatButtons";
 import ChatButton from "./ChatButton";
 import { useActor } from "./ActorContext";
 import { ACTORS, viewOf, type OwnerChoices } from "@/lib/actors";
-import { compact } from "@/lib/format";
+import { compact, shortDate } from "@/lib/format";
 
 /** One row of the user_cards view. */
 export type CardRow = {
@@ -25,6 +25,9 @@ export type CardRow = {
   total_views: number | null;
   median_views: number | null;
   max_views: number | null;
+  /** When this account's posts were last fetched. /network only: /users
+   *  leaves it out and the card draws nothing for it. */
+  last_fetched_at?: string | null;
   /** The selected owner's own vote and format picks, or both owners'
    *  combined on "All". Formats are independent of each other and the vote. */
   vote: "like" | "dislike" | "none";
@@ -173,6 +176,15 @@ export default function UserCard({
         <Stat value={compact(user.total_views)} label="Total views" />
         <Stat value={compact(user.max_views)} label="Best post" />
       </div>
+
+      {user.last_fetched_at && (
+        <p className="-mt-1 text-[11px] text-neutral-500">
+          Posts fetched{" "}
+          <span className="tabular-nums text-neutral-300">
+            {shortDate(user.last_fetched_at)}
+          </span>
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
         {user.common && (

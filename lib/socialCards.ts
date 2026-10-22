@@ -136,6 +136,7 @@ type Account = {
     | "total_views"
     | "median_views"
     | "max_views"
+    | "last_fetched_at"
     | "vote"
     | "heygen"
     | "text_format"
@@ -144,6 +145,8 @@ type Account = {
     | "choices"
   >;
   protected: boolean;
+  /** Owners whose graph the account is in, either direction. */
+  owner_ids: string[];
   follower: boolean;
   following: boolean;
   mutual: boolean;
@@ -203,6 +206,7 @@ type Rollup = {
   posts: number | null;
   total_views: number | null;
   median_views: number | null;
+  last_fetched_at: string | null;
 };
 
 /**
@@ -221,7 +225,7 @@ const loadRollupIndex = cache(async (): Promise<Map<string, Rollup>> => {
   for (let offset = 0; ; offset += FETCH_PAGE) {
     const { data, error } = await db
       .from("user_posts_summary")
-      .select("author_id,posts,total_views,median_views")
+      .select("author_id,posts,total_views,median_views,last_fetched_at")
       .order("author_id", { ascending: true })
       .range(offset, offset + FETCH_PAGE - 1);
 
@@ -231,6 +235,7 @@ const loadRollupIndex = cache(async (): Promise<Map<string, Rollup>> => {
         posts: row.posts,
         total_views: row.total_views,
         median_views: row.median_views,
+        last_fetched_at: row.last_fetched_at,
       });
     }
     if (!data || data.length < FETCH_PAGE) return out;
@@ -347,6 +352,7 @@ const buildGraph = cache(async (
         common,
       },
       protected: edge.protected ?? false,
+      owner_ids: [...owners.keys()],
       follower,
       following,
       mutual,
@@ -399,7 +405,7 @@ async function withRollups(
   const [posts, votes, formats] = await Promise.all([
     db
       .from("user_posts_summary")
-      .select("author_id,posts,total_views,median_views,max_views")
+      .select("author_id,posts,total_views,median_views,max_views,last_fetched_at")
       .in("author_id", ids),
     db
       .from("user_votes")
@@ -450,6 +456,7 @@ async function withRollups(
       total_views: p?.total_views ?? null,
       median_views: p?.median_views ?? null,
       max_views: p?.max_views ?? null,
+      last_fetched_at: p?.last_fetched_at ?? null,
       ...choicesFor(choicesOf(a.profile.rest_id), actor),
     } satisfies CardRow;
   });
@@ -549,4 +556,34 @@ export async function loadSocialCounts(
     text: accounts.filter((a) => a.text).length,
     personal: accounts.filter((a) => a.personal).length,
   };
+}
+
+/**
+ * How far each owner's post data reaches: the latest fetch over the accounts
+ * in their graph, keyed by owner_id. Just the selected owner's, or every
+ * owner's on "All".
+ *
+ *   select owner_id, max(s.last_fetched_at)
+ *   from <graph> join user_posts_summary s on s.author_id = rest_id
+ *   group by owner_id
+ */
+export async function loadFetchDates(
+  ownerId: string | null,
+  actor: string | null = null
+): Promise<Map<string, string>> {
+  const [accounts, rollups] = await Promise.all([
+    buildGraph(ownerId, actor),
+    loadRollupIndex(),
+  ]);
+
+  const out = new Map<string, string>();
+  for (const a of accounts) {
+    const at = rollups.get(a.profile.rest_id)?.last_fetched_at;
+    if (!at) continue;
+    for (const owner of a.owner_ids) {
+      const prev = out.get(owner);
+      if (!prev || Date.parse(at) > Date.parse(prev)) out.set(owner, at);
+    }
+  }
+  return out;
 }

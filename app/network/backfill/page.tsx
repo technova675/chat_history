@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import SweepOwnerSelect, { useSweepOwner } from "../SweepOwner";
 
 /**
  * Driver for the first-touch sweep: active accounts in the owner's graph with
@@ -76,16 +77,13 @@ export default function NetworkBackfillPage() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [log]);
 
-  // ?owner= on this page is passed straight through to the queue, so the same
-  // UI drives any owner's graph.
-  const ownerParam = useCallback(() => {
-    if (typeof window === "undefined") return "";
-    const owner = new URLSearchParams(window.location.search).get("owner");
-    return owner ? `?owner=${encodeURIComponent(owner)}` : "";
-  }, []);
+  // Whose graph the queue is drawn from: the dropdown, kept in ?owner= and
+  // passed straight through to the API.
+  const [owner, setOwner] = useSweepOwner();
+  const ownerParam = owner ? `?owner=${encodeURIComponent(owner)}` : "";
 
   const refresh = useCallback(async () => {
-    const res = await fetch(`/api/network/backfill${ownerParam()}`);
+    const res = await fetch(`/api/network/backfill${ownerParam}`);
     const data = await res.json();
     if (data.error) setError(data.error);
     else setQueue(data);
@@ -93,13 +91,29 @@ export default function NetworkBackfillPage() {
   }, [ownerParam]);
 
   useEffect(() => {
+    if (!owner) return;
     refresh().catch((e) => setError(String(e)));
-  }, [refresh]);
+  }, [owner, refresh]);
+
+  // A new owner is a new queue: this session's progress belongs to the old one.
+  const changeOwner = useCallback(
+    (next: string) => {
+      attempted.current.clear();
+      setDone(0);
+      setStored(0);
+      setDropped(0);
+      setEmptyRuns(0);
+      setQueue(null);
+      setError(null);
+      setOwner(next);
+    },
+    [setOwner]
+  );
 
   /** One handle: one billable actor run. */
   const runOne = useCallback(
     async (candidate: Candidate, index: number, total: number) => {
-      const res = await fetch(`/api/network/backfill${ownerParam()}`, {
+      const res = await fetch(`/api/network/backfill${ownerParam}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -240,6 +254,13 @@ export default function NetworkBackfillPage() {
           >
             thin-timeline re-fill
           </a>
+          <div className="ml-auto">
+            <SweepOwnerSelect
+              owner={owner}
+              onChange={changeOwner}
+              disabled={running}
+            />
+          </div>
         </div>
 
         <p className="leading-relaxed text-slate-400">
