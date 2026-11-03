@@ -74,6 +74,11 @@ const FORMAT_COLUMNS = {
   personal: "personal_by",
 } as const;
 
+/** `?disliked=true|false`; anything else means the switch is off. */
+export function parseDisliked(value: unknown): boolean | null {
+  return value === "true" ? true : value === "false" ? false : null;
+}
+
 export type { OwnerChoices };
 
 /**
@@ -129,6 +134,7 @@ function query(
   extra: ExtraFilter,
   commonIds: string[],
   actor: string | null,
+  disliked: boolean | null = null,
   count = false
 ) {
   const db = supabaseAdmin();
@@ -159,6 +165,9 @@ function query(
     notChosen("liked_by");
     notChosen("disliked_by");
   }
+  // The Disliked true / false switch, on top of whichever pill is on.
+  if (disliked === true) chosen("disliked_by");
+  if (disliked === false) notChosen("disliked_by");
   if (extra === "common") {
     // "-" matches no rest_id, so an empty list yields no rows rather than a
     // malformed in.() filter.
@@ -182,13 +191,21 @@ export async function loadCards(
   limit: number,
   sort: SortKey = DEFAULT_SORT,
   extra: ExtraFilter = null,
-  actor: string | null = null
+  actor: string | null = null,
+  disliked: boolean | null = null
 ): Promise<CardRow[]> {
   const { column, ascending } = sortColumn(sort);
 
   const commonIds = extra === "common" ? await loadCommonIds() : [];
 
-  const { data, error } = await query(ownerId, vote, extra, commonIds, actor)
+  const { data, error } = await query(
+    ownerId,
+    vote,
+    extra,
+    commonIds,
+    actor,
+    disliked
+  )
     // nullsFirst: false in BOTH directions. An account with no scraped posts
     // has a null rollup, and null is not zero - it has not earned first place
     // on an ascending view sort, so it sorts last either way.
@@ -255,7 +272,8 @@ export async function loadTotals(
   ownerId: string | null,
   vote: VoteFilter,
   extra: ExtraFilter = null,
-  actor: string | null = null
+  actor: string | null = null,
+  disliked: boolean | null = null
 ): Promise<Totals> {
   const totals: Totals = {
     profiles: 0,
@@ -267,7 +285,14 @@ export async function loadTotals(
 
   const page = 1000;
   for (let from = 0; ; from += page) {
-    const { data, error } = await query(ownerId, vote, extra, commonIds, actor)
+    const { data, error } = await query(
+      ownerId,
+      vote,
+      extra,
+      commonIds,
+      actor,
+      disliked
+    )
       .select("is_blue_verified,can_dm,followers")
       .range(from, from + page - 1);
 
@@ -292,7 +317,8 @@ export async function loadTotals(
 /** Row counts for the filter pills. head:true, so no rows travel. */
 export async function loadCounts(
   ownerId: string | null,
-  actor: string | null = null
+  actor: string | null = null,
+  disliked: boolean | null = null
 ) {
   const commonIds = await loadCommonIds();
   const countOf = async (vote: VoteFilter, extra: ExtraFilter) => {
@@ -302,6 +328,7 @@ export async function loadCounts(
       extra,
       commonIds,
       actor,
+      disliked,
       true
     );
     if (error) throw new Error(error.message);

@@ -73,7 +73,7 @@ export type Totals = {
  * owners follow do not count.
  *
  * HeyGen, Text and Personal are the format flags from user_formats, the same
- * ones the buttons on the card toggle.
+ * ones the buttons on the card toggle. Disliked is the dislike from user_votes.
  */
 export type RelationFilter =
   | "follower"
@@ -84,6 +84,7 @@ export type RelationFilter =
   | "heygen"
   | "text"
   | "personal"
+  | "disliked"
   | null;
 
 const RELATIONS = [
@@ -95,6 +96,7 @@ const RELATIONS = [
   "heygen",
   "text",
   "personal",
+  "disliked",
 ] as const;
 
 export function parseRelation(value: unknown): RelationFilter {
@@ -155,6 +157,7 @@ type Account = {
   heygen: boolean;
   text: boolean;
   personal: boolean;
+  disliked: boolean;
 };
 
 type Formats = { heygen: boolean; text_format: boolean; personal: boolean };
@@ -197,6 +200,36 @@ const loadFormatIndex = cache(
           personal: row.personal || (prev?.personal ?? false),
         });
       }
+      if (!data || data.length < FETCH_PAGE) return out;
+    }
+  }
+);
+
+/**
+ * Every account the selected owner has disliked, or either owner on "All".
+ * Only disliked rows: a like, or no row, both mean no dislike. Rows from
+ * before votes were per owner have no owner_id and count for nobody.
+ */
+const loadDislikeIndex = cache(
+  async (actor: string | null): Promise<Set<string>> => {
+    const db = supabaseAdmin();
+    const out = new Set<string>();
+
+    for (let offset = 0; ; offset += FETCH_PAGE) {
+      let q = db
+        .from("user_votes")
+        .select("user_id")
+        .eq("disliked", true)
+        .not("owner_id", "is", null);
+      if (actor) q = q.eq("owner_id", actor);
+
+      const { data, error } = await q
+        .order("user_id", { ascending: true })
+        .order("owner_id", { ascending: true })
+        .range(offset, offset + FETCH_PAGE - 1);
+
+      if (error) throw new Error(error.message);
+      for (const row of data ?? []) out.add(String(row.user_id));
       if (!data || data.length < FETCH_PAGE) return out;
     }
   }
@@ -257,19 +290,21 @@ const loadRollupIndex = cache(async (): Promise<Map<string, Rollup>> => {
  * `common` needs every owner's edges, so a single-owner graph also builds the
  * all-owners one to look it up - the graph is small enough that this is cheap.
  *
- * actor only decides the format flags: the HeyGen / Text / Personal pills are
- * the selected owner's own picks.
+ * actor only decides the format and dislike flags: the HeyGen / Text /
+ * Personal / Disliked pills are the selected owner's own picks.
  */
 const buildGraph = cache(async (
   ownerId: string | null,
   actor: string | null
 ): Promise<Account[]> => {
-  const [followerEdges, followingEdges, formats, rollups] = await Promise.all([
-    loadEdges("followers", ownerId),
-    loadEdges("following", ownerId),
-    loadFormatIndex(actor),
-    loadRollupIndex(),
-  ]);
+  const [followerEdges, followingEdges, formats, dislikes, rollups] =
+    await Promise.all([
+      loadEdges("followers", ownerId),
+      loadEdges("following", ownerId),
+      loadFormatIndex(actor),
+      loadDislikeIndex(actor),
+      loadRollupIndex(),
+    ]);
 
   // (rest_id -> owner_id -> directions), plus the freshest profile seen.
   const accounts = new Map<
@@ -361,6 +396,7 @@ const buildGraph = cache(async (
       heygen: formats.get(edge.rest_id)?.heygen ?? false,
       text: formats.get(edge.rest_id)?.text_format ?? false,
       personal: formats.get(edge.rest_id)?.personal ?? false,
+      disliked: dislikes.has(edge.rest_id),
     });
   }
 
@@ -378,10 +414,21 @@ const buildGraph = cache(async (
 async function select(
   ownerId: string | null,
   relation: RelationFilter,
-  actor: string | null
+  actor: string | null,
+  disliked: boolean | null = null
 ) {
   const accounts = await buildGraph(ownerId, actor);
-  return relation ? accounts.filter((a) => a[relation]) : accounts;
+  const inRelation = relation ? accounts.filter((a) => a[relation]) : accounts;
+  // The Disliked true / false switch sits on top of the pill: it narrows
+  // whichever pill is on, rather than being a pill of its own.
+  return disliked === null
+    ? inRelation
+    : inRelation.filter((a) => a.disliked === disliked);
+}
+
+/** `?disliked=true|false`; anything else means the switch is off. */
+export function parseDisliked(value: unknown): boolean | null {
+  return value === "true" ? true : value === "false" ? false : null;
 }
 
 /**
@@ -518,9 +565,13 @@ export async function loadSocialCards(
   offset: number,
   limit: number,
   sort: SortKey = DEFAULT_SORT,
-  actor: string | null = null
+  actor: string | null = null,
+  disliked: boolean | null = null
 ): Promise<CardRow[]> {
-  const rows = await sortAccounts(await select(ownerId, relation, actor), sort);
+  const rows = await sortAccounts(
+    await select(ownerId, relation, actor, disliked),
+    sort
+  );
   return withRollups(rows.slice(offset, offset + limit), actor);
 }
 
@@ -528,9 +579,10 @@ export async function loadSocialCards(
 export async function loadSocialTotals(
   ownerId: string | null,
   relation: RelationFilter,
-  actor: string | null = null
+  actor: string | null = null,
+  disliked: boolean | null = null
 ): Promise<Totals> {
-  const rows = await select(ownerId, relation, actor);
+  const rows = await select(ownerId, relation, actor, disliked);
   return {
     profiles: rows.length,
     mutual: rows.filter((a) => a.mutual).length,
@@ -542,9 +594,12 @@ export async function loadSocialTotals(
 /** Row counts for the filter pills. */
 export async function loadSocialCounts(
   ownerId: string | null,
-  actor: string | null = null
+  actor: string | null = null,
+  disliked: boolean | null = null
 ) {
-  const accounts = await buildGraph(ownerId, actor);
+  const accounts = (await buildGraph(ownerId, actor)).filter(
+    (a) => disliked === null || a.disliked === disliked
+  );
   return {
     all: accounts.length,
     follower: accounts.filter((a) => a.follower).length,
@@ -555,6 +610,7 @@ export async function loadSocialCounts(
     heygen: accounts.filter((a) => a.heygen).length,
     text: accounts.filter((a) => a.text).length,
     personal: accounts.filter((a) => a.personal).length,
+    disliked: accounts.filter((a) => a.disliked).length,
   };
 }
 

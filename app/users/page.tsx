@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import OwnerPicker, { type Owner } from "./OwnerPicker";
 import UsersFeed from "./UsersFeed";
 import SortPicker from "./SortPicker";
+import DislikedPicker from "./DislikedPicker";
 import { ActorProvider } from "./ActorContext";
 import { compact } from "@/lib/format";
 import { parseActor } from "@/lib/actors";
@@ -9,6 +10,7 @@ import {
   loadCards,
   loadCounts,
   loadTotals,
+  parseDisliked,
   parseExtraFilter,
   parseSort,
   PAGE_SIZE,
@@ -45,12 +47,14 @@ function VoteFilterPills({
   active,
   extra,
   sort,
+  disliked,
   counts,
 }: {
   ownerId: string | null;
   active: VoteFilter;
   extra: ExtraFilter;
   sort: SortKey;
+  disliked: boolean | null;
   counts: {
     all: number;
     like: number;
@@ -70,6 +74,7 @@ function VoteFilterPills({
     if (ownerId) params.set("owner", ownerId);
     if (key && isExtra(key)) params.set("filter", key);
     else if (key) params.set("vote", key);
+    if (disliked !== null) params.set("disliked", String(disliked));
     if (sort !== DEFAULT_SORT) params.set("sort", sort);
     const qs = params.toString();
     return qs ? `/users?${qs}` : "/users";
@@ -115,7 +120,13 @@ function VoteFilterPills({
 }
 
 export default async function UsersPage(props: PageProps<"/users">) {
-  const { owner, vote, filter, sort: sortParam } = await props.searchParams;
+  const {
+    owner,
+    vote,
+    filter,
+    disliked: dislikedParam,
+    sort: sortParam,
+  } = await props.searchParams;
   const ownerId = typeof owner === "string" && owner ? owner : null;
   const extra = parseExtraFilter(filter);
   // ?filter= and the vote pills are exclusive, so a stale vote is dropped.
@@ -124,6 +135,8 @@ export default async function UsersPage(props: PageProps<"/users">) {
       ? vote
       : null;
   const sort = parseSort(sortParam);
+  const disliked = parseDisliked(dislikedParam);
+  const dislikedParamValue = disliked === null ? null : String(disliked);
   // Votes and format picks are saved for the selected owner, and the pills
   // and the cards' buttons show theirs. On "All" a click asks which owner.
   const actor = parseActor(ownerId);
@@ -131,9 +144,9 @@ export default async function UsersPage(props: PageProps<"/users">) {
   // Only the first page of cards is fetched here; UsersFeed pulls the rest
   // through /api/users as the grid scrolls.
   const [users, counts, totals, owners] = await Promise.all([
-    loadCards(ownerId, voteFilter, 0, PAGE_SIZE, sort, extra, actor),
-    loadCounts(ownerId, actor),
-    loadTotals(ownerId, voteFilter, extra, actor),
+    loadCards(ownerId, voteFilter, 0, PAGE_SIZE, sort, extra, actor, disliked),
+    loadCounts(ownerId, actor, disliked),
+    loadTotals(ownerId, voteFilter, extra, actor, disliked),
     loadOwners(),
   ]);
 
@@ -181,6 +194,7 @@ export default async function UsersPage(props: PageProps<"/users">) {
                 extraParams={{
                   vote: voteFilter,
                   filter: extra,
+                  disliked: dislikedParamValue,
                   sort: sort === DEFAULT_SORT ? null : sort,
                 }}
               />
@@ -192,18 +206,32 @@ export default async function UsersPage(props: PageProps<"/users">) {
             active={voteFilter}
             extra={extra}
             sort={sort}
+            disliked={disliked}
             counts={counts}
           />
 
-          <SortPicker
-            basePath="/users"
-            active={sort}
-            extraParams={{
-              owner: ownerId,
-              vote: voteFilter,
-              filter: extra,
-            }}
-          />
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <DislikedPicker
+              basePath="/users"
+              sort={sort}
+              active={disliked}
+              extraParams={{
+                owner: ownerId,
+                vote: voteFilter,
+                filter: extra,
+              }}
+            />
+            <SortPicker
+              basePath="/users"
+              active={sort}
+              extraParams={{
+                owner: ownerId,
+                vote: voteFilter,
+                filter: extra,
+                disliked: dislikedParamValue,
+              }}
+            />
+          </div>
 
           <dl className="flex flex-wrap gap-x-10 gap-y-3 border-t border-neutral-900 pt-4">
             {[
@@ -256,7 +284,7 @@ export default async function UsersPage(props: PageProps<"/users">) {
           </p>
         ) : (
           <UsersFeed
-            key={`${ownerId ?? "all"}:${extra ?? voteFilter ?? "all"}:${sort}`}
+            key={`${ownerId ?? "all"}:${extra ?? voteFilter ?? "all"}:${disliked ?? "any"}:${sort}`}
             initialUsers={users}
             total={totals.profiles}
             pageSize={PAGE_SIZE}
@@ -265,6 +293,7 @@ export default async function UsersPage(props: PageProps<"/users">) {
               owner: ownerId,
               vote: voteFilter,
               filter: extra,
+              disliked: dislikedParamValue,
               sort,
             }}
           />

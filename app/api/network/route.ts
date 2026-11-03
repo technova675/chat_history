@@ -1,10 +1,15 @@
-import { loadSocialCards, parseRelation, parseSort } from "@/lib/socialCards";
+import {
+  loadSocialCards,
+  parseDisliked,
+  parseRelation,
+  parseSort,
+} from "@/lib/socialCards";
 import { parseActor } from "@/lib/actors";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/network?offset=&limit=&owner=&rel=&sort=
+ * GET /api/network?offset=&limit=&owner=&rel=&disliked=&sort=
  *
  * Pages the follower/following feed. The first page is server-rendered by
  * /network; this serves every page after it as the grid scrolls.
@@ -24,7 +29,8 @@ export async function GET(request: Request) {
       offset,
       limit,
       sort,
-      parseActor(owner)
+      parseActor(owner),
+      parseDisliked(params.get("disliked"))
     );
 
     return Response.json({ users, offset, limit });

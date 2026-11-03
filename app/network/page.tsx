@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import OwnerPicker, { type Owner } from "@/app/users/OwnerPicker";
 import UsersFeed from "@/app/users/UsersFeed";
 import SortPicker from "@/app/users/SortPicker";
+import DislikedPicker from "@/app/users/DislikedPicker";
 import { ActorProvider } from "@/app/users/ActorContext";
 import { compact, shortDate } from "@/lib/format";
 import { parseActor } from "@/lib/actors";
@@ -11,6 +12,7 @@ import {
   loadFetchDates,
   loadSocialTotals,
   parseRelation,
+  parseDisliked,
   parseSort,
   PAGE_SIZE,
   DEFAULT_SORT,
@@ -37,11 +39,13 @@ function RelationPills({
   ownerId,
   active,
   sort,
+  disliked,
   counts,
 }: {
   ownerId: string | null;
   active: RelationFilter;
   sort: SortKey;
+  disliked: boolean | null;
   counts: {
     all: number;
     follower: number;
@@ -52,12 +56,14 @@ function RelationPills({
     heygen: number;
     text: number;
     personal: number;
+    disliked: number;
   };
 }) {
   const href = (relation: RelationFilter) => {
     const params = new URLSearchParams();
     if (ownerId) params.set("owner", ownerId);
     if (relation) params.set("rel", relation);
+    if (disliked !== null) params.set("disliked", String(disliked));
     if (sort !== DEFAULT_SORT) params.set("sort", sort);
     const qs = params.toString();
     return qs ? `/network?${qs}` : "/network";
@@ -76,6 +82,8 @@ function RelationPills({
     { key: "heygen" as const, label: "HeyGen", count: counts.heygen, on: "border-violet-700 bg-violet-950/60 text-violet-300" },
     { key: "text" as const, label: "Text", count: counts.text, on: "border-amber-700 bg-amber-950/60 text-amber-300" },
     { key: "personal" as const, label: "Personal", count: counts.personal, on: "border-teal-700 bg-teal-950/60 text-teal-300" },
+    // The owner's own dislikes, from the card's thumbs-down.
+    { key: "disliked" as const, label: "Disliked", count: counts.disliked, on: "border-red-800 bg-red-950/60 text-red-400" },
   ];
 
   return (
@@ -102,10 +110,12 @@ function RelationPills({
 }
 
 export default async function NetworkPage(props: PageProps<"/network">) {
-  const { owner, rel, sort: sortParam } = await props.searchParams;
+  const { owner, rel, disliked: dislikedParam, sort: sortParam } =
+    await props.searchParams;
   const ownerId = typeof owner === "string" && owner ? owner : null;
   const relation = parseRelation(rel);
   const sort = parseSort(sortParam);
+  const disliked = parseDisliked(dislikedParam);
   // Votes and format picks are saved for the selected owner, and the pills
   // and the cards' buttons show theirs. On "All" a click asks which owner.
   const actor = parseActor(ownerId);
@@ -113,9 +123,9 @@ export default async function NetworkPage(props: PageProps<"/network">) {
   // Only the first page of cards is fetched here; UsersFeed pulls the rest
   // through /api/network as the grid scrolls.
   const [users, counts, totals, owners, fetchDates] = await Promise.all([
-    loadSocialCards(ownerId, relation, 0, PAGE_SIZE, sort, actor),
-    loadSocialCounts(ownerId, actor),
-    loadSocialTotals(ownerId, relation, actor),
+    loadSocialCards(ownerId, relation, 0, PAGE_SIZE, sort, actor, disliked),
+    loadSocialCounts(ownerId, actor, disliked),
+    loadSocialTotals(ownerId, relation, actor, disliked),
     loadOwners(),
     loadFetchDates(ownerId, actor),
   ]);
@@ -160,6 +170,7 @@ export default async function NetworkPage(props: PageProps<"/network">) {
                 basePath="/network"
                 extraParams={{
                   rel: relation,
+                  disliked: disliked === null ? null : String(disliked),
                   sort: sort === DEFAULT_SORT ? null : sort,
                 }}
               />
@@ -170,14 +181,27 @@ export default async function NetworkPage(props: PageProps<"/network">) {
             ownerId={ownerId}
             active={relation}
             sort={sort}
+            disliked={disliked}
             counts={counts}
           />
 
-          <SortPicker
-            basePath="/network"
-            active={sort}
-            extraParams={{ owner: ownerId, rel: relation }}
-          />
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <DislikedPicker
+              basePath="/network"
+              sort={sort}
+              active={disliked}
+              extraParams={{ owner: ownerId, rel: relation }}
+            />
+            <SortPicker
+              basePath="/network"
+              active={sort}
+              extraParams={{
+                owner: ownerId,
+                rel: relation,
+                disliked: disliked === null ? null : String(disliked),
+              }}
+            />
+          </div>
 
           <dl className="flex flex-wrap gap-x-10 gap-y-3 border-t border-neutral-900 pt-4">
             {[
@@ -227,12 +251,17 @@ export default async function NetworkPage(props: PageProps<"/network">) {
           </p>
         ) : (
           <UsersFeed
-            key={`${ownerId ?? "all"}:${relation ?? "all"}:${sort}`}
+            key={`${ownerId ?? "all"}:${relation ?? "all"}:${disliked ?? "any"}:${sort}`}
             initialUsers={users}
             total={totals.profiles}
             pageSize={PAGE_SIZE}
             endpoint="/api/network"
-            filters={{ owner: ownerId, rel: relation, sort }}
+            filters={{
+              owner: ownerId,
+              rel: relation,
+              disliked: disliked === null ? null : String(disliked),
+              sort,
+            }}
           />
         )}
       </div>
